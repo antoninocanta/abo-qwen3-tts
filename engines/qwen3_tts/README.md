@@ -260,6 +260,41 @@ coût ne se represente pas.
 Donc `QWEN_MAX_RESIDENT=1` sur 8 Go — deux résidents demanderaient ~9,9 Go et ne
 tiendraient pas. 2 tient sur 16 Go, davantage sur 24.
 
+### La même image, en local et chez Vast
+
+Même image (`sha256:b3b8c904`), même texte, même description de voix.
+
+| | RTX 2060 Super, local | RTX 5070 Ti, Vast |
+|---|---|---|
+| Segments à chaud | 1,8 – 2,2 s | 3,2 – 5,7 s |
+| **Médiane** | **2,0 s** | **3,5 s** |
+| Démarrage à froid | 4 s | **744 s** (31,8 Go à tirer) |
+
+**La carte de 2019 bat la carte de 2025**, parce qu'elle n'est pas derrière
+Internet.
+
+Le temps mesuré chez Vast contient l'aller-retour réseau ; celui du local est du
+calcul pur, en HTTP direct sur la boucle locale. En régressant les cinq segments
+distants sur leur durée d'audio, on sépare les deux termes :
+
+```text
+temps ≈ 2,6 s de coût fixe + 0,33 × durée d'audio
+```
+
+Soit **~2,6 s de réseau et de routage**, et un calcul autour de RTF 0,33 — la
+5070 Ti calcule bien plus vite que la 2060 Super, et le réseau efface l'avantage.
+Cinq points et une mesure influente : l'ordre de grandeur tient, pas la
+décimale.
+
+**Conséquence de placement** (`specs/17`) : pour le mode Création, où
+l'utilisateur attend segment par segment, une machine proche et modeste vaut
+mieux qu'une machine lointaine et puissante. La capacité louée sert le débit,
+pas la latence.
+
+Et elle ne sert pas l'immédiateté non plus : **douze minutes** pour qu'un worker
+loué existe, le temps de tirer 31,8 Go. Une capacité de débordement se prévoit,
+elle ne s'appelle pas à la demande.
+
 ### Ce qui reste vrai du pool
 
 `--batch-size` et `--prefork` n'existent **qu'en mode serveur** : sans processus
