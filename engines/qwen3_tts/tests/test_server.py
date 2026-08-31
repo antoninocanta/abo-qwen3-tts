@@ -165,3 +165,35 @@ def test_l_enrolement_reste_une_invocation_unique(client):
     assert not resident_launches()
 
 
+def test_le_backend_gpu_est_demande_a_chaque_invocation(client):
+    """Sans `--backend`, le moteur reste 100 % sur le CPU — son `main.c` le dit.
+
+    C'est ce defaut qui a fait tourner trois mesures sur le CPU d'hotes loues,
+    carte payee et inactive. Il ne doit plus pouvoir revenir en silence, et sur
+    aucun des chemins : resident, invocation unique, enrolement.
+    """
+    server.MAX_RESIDENT = 2
+    synthesize(client, voice(b"victor"))
+    client.post(
+        "/enroll",
+        json={
+            "reference_b64": base64.b64encode(b"RIFF" + b"\x00" * 40).decode("ascii"),
+            "voice_name": "Victor",
+            "language": "French",
+        },
+    )
+
+    assert launches()
+    assert all("--backend cuda" in line for line in launches())
+
+
+def test_le_backend_se_coupe_sans_reconstruire_l_image(client, monkeypatch):
+    """`QWEN_BACKEND=` vide rend le chemin CPU : sortie de secours sans rebuild."""
+    monkeypatch.setattr(server, "BACKEND", "")
+
+    synthesize(client, voice(b"victor"))
+
+    assert launches()
+    assert not any("--backend" in line for line in launches())
+
+

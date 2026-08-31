@@ -50,6 +50,15 @@ MODEL_DESIGN = os.getenv("QWEN_MODEL_DESIGN", "qwen3-tts-voice-design")
 VOICE_CACHE = Path(os.getenv("QWEN_VOICE_CACHE", "/var/cache/abo/voices"))
 TIMEOUT = float(os.getenv("QWEN_TIMEOUT_SECONDS", "600"))
 
+# Sans `--backend`, le moteur reste **entierement sur le CPU** — c'est ecrit
+# noir sur blanc dans son `main.c`. Louer une carte n'y change rien : elle
+# dormirait. Le support CUDA est compile dans l'image (`make cuda`), il ne
+# manquait que de l'allumer.
+#
+# Vider la variable rend le chemin CPU, sans reconstruire l'image : c'est la
+# sortie de secours si un hote refuse le backend.
+BACKEND = os.getenv("QWEN_BACKEND", "cuda").strip()
+
 # Chaque resident garde un jeu de poids complet en VRAM. Le plafond est donc une
 # contrainte materielle, pas un reglage de confort : le depasser fait tomber la
 # carte en OOM au milieu d'un chapitre. Deux tient sur 24 Go avec de la marge.
@@ -115,6 +124,7 @@ async def _run(args: list[str]) -> None:
     """
     process = await asyncio.create_subprocess_exec(
         str(ENGINE),
+        *_backend_args(),
         *args,
         cwd=str(MODEL_DIR),
         stdout=asyncio.subprocess.PIPE,
@@ -130,6 +140,10 @@ async def _run(args: list[str]) -> None:
         tail = (output or b"").decode("utf-8", "replace")[-400:]
         logger.error("engine failed rc=%s %s", process.returncode, tail)
         raise HTTPException(status_code=502, detail="Moteur en erreur.")
+
+
+def _backend_args() -> list[str]:
+    return ["--backend", BACKEND] if BACKEND else []
 
 
 def _cached_voice(sha256: str) -> Path:
@@ -251,7 +265,7 @@ async def _resident_for(model: str, voice: Path | None, preset: str) -> _Residen
             await _evict_oldest_locked()
 
         port = _free_port()
-        args = ["-d", model, "--serve", str(port)]
+        args = [*_backend_args(), "-d", model, "--serve", str(port)]
         if voice is not None:
             args += ["--load-voice", str(voice), "--icl-only"]
         elif preset:

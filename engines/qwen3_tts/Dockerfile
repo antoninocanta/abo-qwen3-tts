@@ -49,6 +49,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QWEN_MODEL_DESIGN=qwen3-tts-voice-design \
     QWEN_VOICE_CACHE=/var/cache/abo/voices \
     QWEN_LOG_FILE=/var/log/abo-qwen.log \
+    QWEN_BACKEND=cuda \
+    QWEN_CUDA_FUSED_TALKER=1 \
+    QWEN_CUDA_CONVDEC=1 \
     WORKER_PORT=3000 \
     REPORT_ADDR=https://run.vast.ai \
     USE_SSL=true
@@ -66,6 +69,10 @@ COPY server.py worker.py entrypoint.sh /opt/abo/
 RUN chmod +x /opt/abo/entrypoint.sh
 RUN mkdir -p /var/cache/abo/voices && touch /var/log/abo-qwen.log
 
+# QWEN_CUDA_* : lus par le moteur au demarrage, en plus de `--backend cuda`.
+# CONVDEC compte autant que le reste — sans lui le decodeur de parole reste sur
+# le CPU de l hote, et l amont mesure la difference entre RTF 0,94 et 0,39.
+#
 # 3000 : le port du proxy PyWorker, seul point d entree. Le serveur de modele
 # reste sur 127.0.0.1:18100 et n est jamais joignable de l exterieur.
 EXPOSE 3000
