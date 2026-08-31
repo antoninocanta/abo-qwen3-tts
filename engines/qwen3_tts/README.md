@@ -105,3 +105,34 @@ d'environnement de l'hébergeur, configuration de benchmark.
 L'agent ABO le remplacera. Le moteur, lui, ne change pas : il expose déjà un
 contrat HTTP local qui ne connaît ni Vast, ni ABO. C'est bien la seule partie
 qui devait survivre.
+
+## Mesures réelles — 31/08/2026, RTX 3090 louée
+
+Parcours complet éprouvé de bout en bout : description → extrait → profil →
+lecture clonée → direction de jeu.
+
+| Étape | Résultat | Durée |
+|---|---|---|
+| `/design` | extrait 207 Ko | 13,4 s |
+| `/enroll` | profil `.qvoice` **25,2 Mo** | 26,0 s |
+| `/synthesize`, profil envoyé | audio 204 Ko | **38,3 s** |
+| `/synthesize`, empreinte seule | audio 146 Ko | **11,5 s** |
+| `/synthesize` + instruction + émotion | audio 127 Ko | 13,4 s |
+| empreinte inconnue | `VOICE_NOT_CACHED` | 1,9 s |
+
+Deux enseignements, tous deux structurants.
+
+**Le cache de voix n'est pas une optimisation, c'est la condition.** Renvoyer le
+profil coûte 27 secondes de plus par appel — 38,3 s contre 11,5 s. Sur un
+chapitre de trois cents segments, c'est plus de deux heures d'écart pour un
+résultat identique. Le backend doit envoyer le profil une fois, puis ne
+transmettre que son empreinte.
+
+**Le moteur recharge ses poids à chaque appel.** Le benchmark de l'autoscaler
+mesure 2,3 sur ce même matériel, mais un segment coûte 11,5 s : le rechargement
+domine largement le calcul. Onze secondes par segment rendent un chapitre
+impraticable.
+
+C'est ce que l'agent ABO devra corriger — un processus qui garde les poids en
+VRAM entre deux segments. Tant qu'il n'existe pas, ce worker convient à une
+création de voix, pas à la production d'un livre.
