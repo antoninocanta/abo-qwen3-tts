@@ -31,20 +31,32 @@ services:
   qwen3-tts:
     image: antoninocanta/abo-qwen3-tts:v1
     restart: unless-stopped
+    # Forme liste, et pas mappage, pour une seule raison : c'est la seule qui
+    # sache **retirer** une variable cuite dans l'ENV de l'image. Une entree
+    # sans `=` est reprise de l'hote ; absente de l'hote, Compose ne la pose
+    # pas du tout. `QWEN_CUDA_CONVDEC: ""` ne marcherait pas — le moteur teste
+    # la presence, pas la valeur.
     environment:
-      # Le moteur seul : ni certificat Vast, ni proxy PyWorker. Ici c est
-      # l agent qui parle au backend, pas le moteur.
-      ABO_ENGINE_ONLY: "1"
+      # Le moteur seul : ni certificat Vast, ni proxy PyWorker. Ici c'est
+      # l'agent qui parle au backend, pas le moteur.
+      - ABO_ENGINE_ONLY=1
       # Chaque resident garde un jeu de poids complet en VRAM (~3,9 Go en bf16
       # pour le 1.7B). Sur une carte de 8 Go, un seul tient — deux la feraient
-      # tomber en OOM au milieu d un chapitre. A relever sur 16 Go et plus.
-      QWEN_MAX_RESIDENT: ${QWEN_MAX_RESIDENT:-1}
-      # Vider pour une machine sans carte : le moteur reste alors sur le CPU,
-      # trois fois plus lent mais valide. Voir engines/qwen3_tts/README.md.
-      QWEN_BACKEND: ${QWEN_BACKEND-cuda}
-      # Le talker fusionne est un gain reel. CONVDEC rend un souffle uniforme :
-      # bon format, bonne duree, aucune erreur, et pas de voix. Jamais le poser.
-      QWEN_CUDA_FUSED_TALKER: ${QWEN_CUDA_FUSED_TALKER-1}
+      # tomber en OOM au milieu d'un chapitre. A relever sur 16 Go et plus.
+      - QWEN_MAX_RESIDENT=${QWEN_MAX_RESIDENT:-1}
+      # `cpu` pour une machine sans carte : meme modele, meme qualite de rendu,
+      # un ordre de grandeur plus lent. Voir engines/qwen3_tts/README.md.
+      - QWEN_BACKEND=${QWEN_BACKEND:-cuda}
+      # Le talker fusionne est un gain reel.
+      - QWEN_CUDA_FUSED_TALKER=${QWEN_CUDA_FUSED_TALKER:-1}
+      # CONVDEC rend un SOUFFLE, pas une voix : bon format, bonne duree, aucune
+      # erreur. Mesure du 01/09 sur RTX 2060 Super, meme texte, meme voix :
+      #   avec CONVDEC   pic   644, 97,1 % de silences  -> muet
+      #   sans CONVDEC   pic 12751, 32,4 % de silences  -> parole
+      # Il est **cuit dans l'ENV de l'image** : ne rien passer ne suffit pas a
+      # l'eteindre. Cette ligne sans `=` est ce qui le retire. Ne pas la
+      # supprimer, et ne jamais lui donner de valeur.
+      - QWEN_CUDA_CONVDEC
     # Le moteur n est joignable que depuis le reseau du compose.
     expose:
       - "18100"

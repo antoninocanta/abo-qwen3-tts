@@ -260,6 +260,33 @@ de la parole. **`CONVDEC` est le seul coupable**, et il l'est même seul. D'où 
 configuration retenue : `--backend cuda` plus `QWEN_CUDA_FUSED_TALKER=1`, et
 **jamais** `CONVDEC`.
 
+#### Il est cuit dans l'ENV de l'image, et ne rien passer ne l'éteint pas
+
+Découvert le 01/09 en branchant le moteur sur la ferme : l'image porte
+`QWEN_CUDA_CONVDEC=1` dans son `ENV`. Un `docker run` qui ne mentionne pas la
+variable rend donc du **souffle**, silencieusement.
+
+Reproduction sur RTX 2060 Super, même texte, même voix native, sortie mesurée :
+
+| | durée | pic | silences | verdict |
+|---|---|---|---|---|
+| ENV de l'image tel quel | 5,76 s | **644** | **97,1 %** | muet |
+| `CONVDEC` retiré | 5,44 s | **12 751** | 32,4 % | parole |
+
+`QWEN_CUDA_CONVDEC=` ne le désactive pas : le moteur teste la **présence** de la
+variable, pas sa valeur. Ce qui la retire vraiment :
+
+```bash
+docker run -e QWEN_CUDA_CONVDEC …          # sans `=`, et absente de l'hôte
+```
+
+et en Compose, une entrée sans `=` dans un `environment` en **forme liste** —
+la forme mappage en est incapable. C'est ce que fait
+[`deploy/docker-compose.yml`](../../deploy/docker-compose.yml).
+
+Troisième reproduction du défaut, et la première qui montre pourquoi il
+survivait à des lancements « propres ». À joindre à l'issue amont.
+
 Le `--gpu-selftest` amont passe (`matvec_bf16` rel 3,1e-07, `matmat_bf16` rel
 5,7e-07, GEMM 6,24×) mais ne couvre que ces deux opérations. Dans
 `docs/gpu-accel-status.md`, la colonne CUDA porte des ⏳ et des 🔷
