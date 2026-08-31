@@ -236,6 +236,30 @@ Prudence sur l'extrapolation : l'amont mesure **0,50 sur A100**, là où la tabl
 par bande passante prédisait ~0,1 — passé un seuil, le décodage mono-flux
 devient limité par le lancement de kernels. Viser **~2 s de calcul**, pas 0,7.
 
+### Mesuré, RTX 2060 Super, 31/08
+
+En local, `ABO_ENGINE_ONLY=1`, HTTP direct — donc **aucun réseau dans le chrono**.
+
+| Étape | Durée | |
+|---|---|---|
+| `/design` | 9,8 s | |
+| `/enroll` | 10,5 s | profil 24 Mo |
+| segment 1 — profil envoyé, résident à démarrer | 13,4 s | |
+| segment 2 | 3,7 s | RTF 0,80 |
+| segments 3 à 6 | **1,8 – 2,2 s** | **RTF 0,46 – 0,49** |
+
+Médiane à chaud : **2,0 s**, **RTF 0,47** — dans la fourchette annoncée par
+l'amont, sur une carte de 2019. Contre 14,5 s avant le correctif : **7× plus
+rapide**. `engine=resident` sur les six appels.
+
+Le segment 2 est plus lent que les suivants (0,80 contre 0,47) : c'est la
+première synthèse du résident, autotune et capture de graphes CUDA compris. Le
+coût ne se represente pas.
+
+**VRAM : 4 950 Mo au pic pour un seul résident**, occupation GPU jusqu'à 73 %.
+Donc `QWEN_MAX_RESIDENT=1` sur 8 Go — deux résidents demanderaient ~9,9 Go et ne
+tiendraient pas. 2 tient sur 16 Go, davantage sur 24.
+
 ### Ce qui reste vrai du pool
 
 `--batch-size` et `--prefork` n'existent **qu'en mode serveur** : sans processus
