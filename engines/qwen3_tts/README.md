@@ -174,11 +174,38 @@ d'avant, une invocation par synthèse.
 segments par voix. Alterner deux voix sur un pool de deux tient ; en alterner
 cinq ferait payer un chargement à chaque segment, c'est-à-dire pire qu'avant.
 
-**Ce qui reste à mesurer.** Le gain attendu — ~11,5 s → ~2 s sur les segments
-qui suivent le premier d'une voix — **n'a pas encore été mesuré sur GPU**. Le
-coût du premier segment d'une voix (chargement + calcul) ne l'a pas été non
-plus, ni la VRAM réellement occupée par résident, qui décidera si le plafond de
-2 est le bon.
+## Mesuré : la résidence marche, et elle ne gagne rien
+
+Deux parcours identiques le 31/08, six segments chacun sur une voix clonée.
+
+| | Chemin | Carte | Segments à chaud (médiane) |
+|---|---|---|---|
+| avant | rechargement par appel | RTX 5070 | **10,0 s** |
+| après | `engine=resident` sur les 6 appels | RTX 5070 Ti | **14,5 s** |
+
+Le champ `engine` confirme que le pool a bien servi : ce n'est pas un repli
+silencieux. Et la carte du second essai est la **plus rapide** des deux.
+
+**Donc le chargement des poids n'était pas le coût dominant d'un segment.** Les
+11,5 s du 31/08 sont du calcul réel. Supprimer le rechargement ne les enlève
+pas, et le pool seul ne rend pas un chapitre praticable.
+
+D'où venait l'erreur : le HANDOFF lisait « le benchmark mesure 2,3 » comme un
+temps par segment. `measured_perf` est un **débit**, en unités par seconde, et
+le `workload_calculator` de `worker.py` compte les caractères. À 5,6 unités/s
+mesurées sur la 5070, une phrase de 55 caractères vaut ~10 s — exactement ce
+qu'on observe. La cible « ~2 s » n'a jamais existé.
+
+**Ce que le pool sert quand même.** `--batch-size` et `--prefork` du moteur
+n'existent **qu'en mode serveur** : sans processus résident, ils sont hors
+d'atteinte. Le pool est donc la marche d'avant, pas le gain lui-même.
+
+**Pistes réelles, non mesurées** : `--int8` / `--int4` sur le Talker, le
+`--batch-size N` façon vLLM, `--prefork N` qui partage les poids en
+copy-on-write, et le modèle 0.6B. C'est là qu'il faut chercher désormais.
+
+**Toujours pas mesuré** : la VRAM réellement occupée par résident, qui décidera
+si le plafond de 2 est le bon.
 
 ## Ce que l'agent ABO apporte, lui
 
