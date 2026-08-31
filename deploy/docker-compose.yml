@@ -1,0 +1,36 @@
+# Un worker ABO sur une machine : l'agent, plus les moteurs qu'elle porte.
+#
+# L'agent parle aux moteurs sur le reseau interne du compose ; rien n'est
+# publie sur l'hote. La seule connexion qui sort est celle de l'agent vers ABO.
+
+services:
+  agent:
+    image: antoninocanta/abo-worker-agent:v1
+    restart: unless-stopped
+    environment:
+      ABO_BACKEND_URL: ${ABO_BACKEND_URL:-https://api.abo.example}
+      ABO_WORKER_SECRET: ${ABO_WORKER_SECRET:?secret d enrolement requis}
+      ABO_WORKER_NAME: ${ABO_WORKER_NAME:-}
+      # Les moteurs joignables, declares au backend a l enrolement.
+      ABO_ENGINES: "qwen3-tts=http://qwen3-tts:18100"
+    depends_on:
+      - qwen3-tts
+
+  qwen3-tts:
+    image: antoninocanta/abo-qwen3-tts:v1
+    restart: unless-stopped
+    # Le moteur n est joignable que depuis le reseau du compose.
+    expose:
+      - "18100"
+    volumes:
+      - voice_cache:/var/cache/abo/voices
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+volumes:
+  voice_cache:

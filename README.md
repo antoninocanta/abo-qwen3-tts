@@ -1,0 +1,72 @@
+# abo-worker
+
+Unité de calcul d'ABO. Un PC équipé d'un GPU devient un worker : on l'installe,
+il se déclare, il reçoit du travail.
+
+Statut : **spécification initiale** — l'agent n'existe pas encore, seul le
+moteur Qwen3-TTS est écrit.
+
+## L'idée
+
+Le calcul n'est pas un fournisseur, c'est une **ferme de machines**. Un PC
+personnel, un serveur loué, une instance Vast.ai à la demande : toutes font
+tourner le même agent et parlent le même protocole.
+
+```text
+ABO Control Plane  →  Compute Pool  →  workers
+                                       ├─ PC perso (RTX 3090)
+                                       ├─ serveur distant
+                                       └─ Vast.ai, pour le débordement
+```
+
+Acheter demain un PC d'occasion doit vouloir dire : brancher, installer,
+rejoindre la ferme. Vast.ai devient le **turbo à la demande**, pas le cœur de
+l'architecture.
+
+## Deux briques
+
+| | Rôle |
+|---|---|
+| **agent** | se déclare au backend, envoie son pouls, tire du travail, rend le résultat |
+| **moteurs** | conteneurs qui savent faire une chose : synthèse, clonage, nettoyage |
+
+L'agent ne sait rien des modèles ; un moteur ne sait rien d'ABO. Entre les
+deux, un contrat HTTP local sur `127.0.0.1`.
+
+## Connexion sortante uniquement
+
+Un worker **n'ouvre aucun port**. Il compose vers le backend en HTTPS et tire
+son travail. C'est ce qui rend un PC derrière une box domestique utilisable
+sans toucher au routeur, et c'est ce qui évite d'exposer une machine
+personnelle sur Internet.
+
+L'administration passe par un VPN de type Tailscale — pour s'y connecter à la
+main, pas pour faire circuler les jobs.
+
+## Répertoires
+
+```text
+abo_worker/
+  agent/      l'agent ABO — à écrire
+  engines/    un répertoire par moteur
+    qwen3_tts/    synthèse, clonage, voice design
+  deploy/     installation d'une machine et lancement des conteneurs
+  docs/       ce qui est propre au worker
+  .github/    construction et publication des images
+```
+
+## Le protocole fait autorité côté backend
+
+Le contrat entre un worker et ABO — enregistrement, pouls, attribution d'un
+job, remise du résultat — est spécifié dans le dépôt du backend :
+`abo_backend/specs/17-workers-et-ferme-de-calcul.md`. Ce dépôt-ci l'implémente,
+il ne le définit pas.
+
+## État
+
+- `engines/qwen3_tts` : image construite et publiée, contrat `/enroll`,
+  `/synthesize`, `/design` opérationnel en local.
+- `engines/qwen3_tts/worker.py` : proxy PyWorker, **spécifique au serverless
+  Vast.ai**. Il reste le seul chemin qui fonctionne aujourd'hui ; l'agent ABO
+  le remplacera et rendra le moteur indépendant de tout hébergeur.
+- `agent/` : à écrire.
