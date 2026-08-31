@@ -182,6 +182,16 @@ class Backend:
         response.raise_for_status()
         return response.json()
 
+    def voice(self, sha256: str) -> str:
+        """Va chercher un profil que cette machine n'a pas encore."""
+        response = self._client.get(
+            f"{self._base}/voices/{sha256}",
+            headers=self._headers,
+            timeout=BACKEND_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json()["voiceB64"]
+
     def result(self, job_id: str, attempt: int, payload: dict) -> None:
         response = self._post(f"/jobs/{job_id}/result", {**payload, "attempt": attempt})
         response.raise_for_status()
@@ -200,49 +210,100 @@ class EngineError(RuntimeError):
     """Le moteur local a refuse ou n'a rien rendu."""
 
 
-def synthesize(client: httpx.Client, engine: Engine, job_input: dict) -> dict:
+def _post_engine(client: httpx.Client, url: str, body: dict) -> httpx.Response:
+    return client.post(url, json=body, timeout=ENGINE_TIMEOUT)
+
+
+def synthesize(
+    client: httpx.Client, engine: Engine, job_input: dict, backend: "Backend"
+) -> dict:
     """Texte -> WAV. Le profil de voix appartient au backend, pas a la machine.
 
-    L'empreinte suffit quand le profil est deja en cache local : renvoyer 25 Mo
-    a chaque segment d'un chapitre serait absurde. Un cache absent est dit
-    explicitement par le moteur (`409 VOICE_NOT_CACHED`) plutot que devine.
+    Seule l'**empreinte** arrive avec le travail : renvoyer 25 Mo a chaque
+    segment d'un chapitre serait absurde. Si la machine n'a pas encore ce
+    profil, le moteur le dit (`409 VOICE_NOT_CACHED`) au lieu de le deviner, et
+    on va le chercher une fois. Les segments suivants passent par le cache.
     """
-    response = client.post(
-        f"{engine.url}/synthesize",
-        json={
-            "text": job_input.get("text", ""),
-            "language": job_input.get("language", "French"),
-            "instruction": job_input.get("instruction", "") or "",
-            "emotion": job_input.get("emotion", "") or "",
-            "preset_voice": job_input.get("presetVoice", "") or "",
-            "voice_sha256": job_input.get("voiceSha256", "") or "",
-            "voice_b64": job_input.get("voiceB64", "") or "",
-        },
-        timeout=ENGINE_TIMEOUT,
-    )
+    body = {
+        "text": job_input.get("text", ""),
+        "language": job_input.get("language", "French"),
+        "instruction": job_input.get("instruction", "") or "",
+        "emotion": job_input.get("emotion", "") or "",
+        "preset_voice": job_input.get("presetVoice", "") or "",
+        "voice_sha256": job_input.get("voiceSha256", "") or "",
+    }
+
+    response = _post_engine(client, f"{engine.url}/synthesize", body)
+    if response.status_code == 409 and body["voice_sha256"]:
+        # Le chemin lent, et il doit le rester : une fois par machine et par
+        # voix. Le profil ne devient pas durable ici, il alimente un cache.
+        logger.info("profil absent du cache, recuperation : %s", body["voice_sha256"][:12])
+        body["voice_b64"] = backend.voice(body["voice_sha256"])
+        response = _post_engine(client, f"{engine.url}/synthesize", body)
+
     if response.status_code != 200:
         raise EngineError(f"{response.status_code} {response.text[:300]}")
 
-    body = response.json()
-    audio = body.get("audio_b64")
+    payload = response.json()
+    audio = payload.get("audio_b64")
     if not audio:
         raise EngineError("Le moteur n'a rendu aucun audio.")
     return {
         "audioB64": audio,
-        "format": body.get("format", "wav"),
+        "format": payload.get("format", "wav"),
         # Ce que la machine a mesure. Sert au cout interne et au placement ;
         # le prix, lui, est recalcule par le backend a partir de l'entree.
         "metrics": {
-            "sizeBytes": body.get("size_bytes", 0),
-            "enginePath": body.get("engine", "unknown"),
+            "sizeBytes": payload.get("size_bytes", 0),
+            "enginePath": payload.get("engine", "unknown"),
         },
     }
 
 
-HANDLERS = {"TTS": synthesize}
+def enrol_voice(
+    client: httpx.Client, engine: Engine, job_input: dict, backend: "Backend"
+) -> dict:
+    """Echantillon + transcription -> profil de voix.
+
+    Le profil repart vers le backend, a qui la voix appartient. Ce qui reste
+    ici n'est qu'un cache, jetable : le perdre ne coute qu'un renvoi.
+    """
+    reference = job_input.get("referenceB64")
+    if not reference:
+        raise EngineError("Aucun echantillon de reference dans ce travail.")
+
+    response = _post_engine(
+        client,
+        f"{engine.url}/enroll",
+        {
+            "reference_b64": reference,
+            "voice_name": job_input.get("voiceName", "voix"),
+            "language": job_input.get("language", "French"),
+            "reference_text": job_input.get("referenceText", "") or "",
+        },
+    )
+    if response.status_code != 200:
+        raise EngineError(f"{response.status_code} {response.text[:300]}")
+
+    payload = response.json()
+    profile = payload.get("voice_b64")
+    if not profile:
+        raise EngineError("Le moteur n'a rendu aucun profil de voix.")
+    return {
+        "artifactB64": profile,
+        # Le backend recalcule l'empreinte : celle-ci ne sert qu'a detecter une
+        # corruption de transport.
+        "artifactSha256": payload.get("sha256", ""),
+        "metrics": {"sizeBytes": payload.get("size_bytes", 0)},
+    }
 
 
-def execute(client: httpx.Client, engines: dict[str, Engine], assignment: dict) -> dict:
+HANDLERS = {"TTS": synthesize, "VOICE_CLONE": enrol_voice}
+
+
+def execute(
+    client: httpx.Client, engines: dict[str, Engine], assignment: dict, backend: "Backend"
+) -> dict:
     engine = engines.get(assignment["engineKey"])
     if engine is None:
         # Le backend a attribue un travail pour un moteur que cette machine ne
@@ -254,7 +315,7 @@ def execute(client: httpx.Client, engines: dict[str, Engine], assignment: dict) 
         raise EngineError(f"Operation non servie par cet agent : {assignment['operation']}")
 
     started = time.monotonic()
-    payload = handler(client, engine, assignment.get("input") or {})
+    payload = handler(client, engine, assignment.get("input") or {}, backend)
     payload["metrics"]["computeMs"] = int((time.monotonic() - started) * 1000)
     return payload
 
@@ -305,7 +366,7 @@ def run() -> None:
                     attempt,
                 )
                 try:
-                    payload = execute(client, by_key, assignment)
+                    payload = execute(client, by_key, assignment, backend)
                 except (EngineError, httpx.HTTPError) as failure:
                     # Un travail qu'on ne sait pas faire se rend tout de suite :
                     # le backend le retentera ailleurs sans attendre le bail.

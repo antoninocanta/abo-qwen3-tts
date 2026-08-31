@@ -7,6 +7,7 @@ silence — une mesure de bout en bout doit porter une verification de contenu,
 et un fichier vide passerait tous les controles de format.
 """
 import base64
+import hashlib
 import io
 import json
 import math
@@ -18,6 +19,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = int(os.getenv("FAKE_ENGINE_PORT", "18100"))
 # Un echec a la demande, pour eprouver le chemin de reprise du backend.
 FAIL = os.getenv("FAKE_ENGINE_FAIL") == "1"
+# Ce que la machine a deja vu passer. Jetable, comme le vrai cache de voix.
+CACHE: set[str] = set()
 
 
 def tone(seconds: float = 1.0, rate: int = 24000) -> bytes:
@@ -54,15 +57,50 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         request = json.loads(self.rfile.read(length) or b"{}")
 
-        if self.path != "/synthesize":
-            self._send(404, {"error": "inconnu"})
-            return
         if FAIL:
             self._send(502, {"error": "moteur en panne, volontairement"})
             return
+        if self.path == "/enroll":
+            self._enroll(request)
+        elif self.path == "/synthesize":
+            self._synthesize(request)
+        else:
+            self._send(404, {"error": "inconnu"})
+
+    def _enroll(self, request: dict) -> None:
+        """Echantillon -> profil. Le profil est derive de l'echantillon, pas
+        tire au hasard : deux enrolements du meme sample doivent rendre la meme
+        empreinte, sans quoi le cache ne voudrait rien dire."""
+        reference = request.get("reference_b64")
+        if not reference:
+            self._send(422, {"error": "echantillon manquant"})
+            return
+        profile = b"FAKEQVOICE" + hashlib.sha256(reference.encode()).digest()
+        digest = hashlib.sha256(profile).hexdigest()
+        CACHE.add(digest)
+        self._send(
+            200,
+            {
+                "voice_b64": base64.b64encode(profile).decode(),
+                "sha256": digest,
+                "size_bytes": len(profile),
+            },
+        )
+
+    def _synthesize(self, request: dict) -> None:
         if not request.get("text"):
             self._send(422, {"error": "texte vide"})
             return
+
+        # Le cache est le coeur du contrat : l'empreinte seule suffit quand la
+        # machine a deja le profil, et un `409` explicite sinon.
+        sha = request.get("voice_sha256") or ""
+        if sha:
+            if request.get("voice_b64"):
+                CACHE.add(sha)
+            elif sha not in CACHE:
+                self._send(409, {"error": "VOICE_NOT_CACHED"})
+                return
 
         audio = tone()
         self._send(
