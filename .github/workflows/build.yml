@@ -6,7 +6,32 @@ on:
   workflow_dispatch:
 
 jobs:
+  # Le pool de moteurs residents s'eprouve sans GPU, avec un faux moteur. C'est
+  # rapide, et ca evite de decouvrir une regression apres un build d'image qui
+  # telecharge plusieurs gigaoctets de poids.
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Volontairement pas tout `requirements.txt` : `vastai` ne sert qu'au
+      # proxy PyWorker, que les tests n'importent pas. L'installer ici ferait
+      # dependre le build d'image d'une dependance etrangere au test.
+      - name: Dependances
+        run: pip install "fastapi>=0.115,<0.120" "httpx>=0.27,<1" pytest
+
+      - name: Tests du serveur de modele
+        working-directory: engines/qwen3_tts
+        run: |
+          chmod +x tests/fake_qwen.py
+          python -m pytest tests -q
+
   image:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

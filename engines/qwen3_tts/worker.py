@@ -43,8 +43,8 @@ worker_config = WorkerConfig(
     handlers=[
         HandlerConfig(
             route="/synthesize",
-            # Le moteur recharge ses poids a chaque appel : deux syntheses en
-            # parallele sur une seule carte se genent au lieu d'aller plus vite.
+            # Une seule carte : deux syntheses en parallele se genent au lieu
+            # d'aller plus vite. Le serveur de modele serialise deja par voix.
             allow_parallel_requests=False,
             max_queue_time=30.0,
             benchmark_config=BenchmarkConfig(dataset=BENCHMARK_DATASET, runs=1),

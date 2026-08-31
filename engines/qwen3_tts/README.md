@@ -31,16 +31,18 @@ calcul (`ADR-001`).
 
 ## Mise en service
 
-1. Créer un dépôt **public** `antoninocanta/abo-qwen3-tts` et y pousser ce
-   dossier à la racine.
-2. Dans *Settings → Secrets → Actions*, ajouter `DOCKERHUB_USERNAME` et
+Le dépôt `antoninocanta/abo-qwen3-tts` porte désormais **tout `abo-worker`** ;
+ce moteur y vit sous `engines/qwen3_tts/`, et c'est le contexte de build.
+
+1. Secrets *Settings → Secrets → Actions* : `DOCKERHUB_USERNAME` et
    `DOCKERHUB_TOKEN`. Le token se crée sur Docker Hub, en écriture seule sur le
    dépôt. Il ne transite jamais ailleurs.
-3. Le push déclenche le build ; l'image part sur
-   `antoninocanta/abo-qwen3-tts:v1`.
-4. Côté Vast : template pointant sur cette image, avec
-   `PYWORKER_REPO=https://github.com/antoninocanta/abo-qwen3-tts`, puis worker
-   group sur l'endpoint existant.
+2. Un push sur `main` déclenche le workflow `engines` : les tests d'abord,
+   l'image ensuite. Un test rouge ne produit pas d'image.
+3. L'image part sur `antoninocanta/abo-qwen3-tts:v1`, `:latest` et `:<sha>`.
+4. Côté Vast : template pointant sur cette image **par digest** (voir plus
+   bas), avec `PYWORKER_REPO=https://github.com/antoninocanta/abo-qwen3-tts`,
+   puis worker group sur l'endpoint existant.
 
 ## À vérifier au premier build
 
@@ -128,11 +130,58 @@ chapitre de trois cents segments, c'est plus de deux heures d'écart pour un
 résultat identique. Le backend doit envoyer le profil une fois, puis ne
 transmettre que son empreinte.
 
-**Le moteur recharge ses poids à chaque appel.** Le benchmark de l'autoscaler
-mesure 2,3 sur ce même matériel, mais un segment coûte 11,5 s : le rechargement
-domine largement le calcul. Onze secondes par segment rendent un chapitre
-impraticable.
+**Le moteur rechargeait ses poids à chaque appel.** Le benchmark de l'autoscaler
+mesure 2,3 sur ce même matériel, mais un segment coûtait 11,5 s : le
+rechargement dominait largement le calcul. Onze secondes par segment rendent un
+chapitre impraticable.
 
-C'est ce que l'agent ABO devra corriger — un processus qui garde les poids en
-VRAM entre deux segments. Tant qu'il n'existe pas, ce worker convient à une
-création de voix, pas à la production d'un livre.
+La cause était ici, pas ailleurs : `server.py` lançait le binaire par
+`create_subprocess_exec` à chaque requête. **Ce n'est pas l'agent ABO qui
+corrige ça** — il aurait pu être écrit en entier sans que la seconde par segment
+bouge. Voir « Résidence des poids » ci-dessous.
+
+## Résidence des poids
+
+Les synthèses passent par un **pool de processus `--serve` gardés vivants**. Le
+chargement est payé une fois par voix, puis amorti sur tous les segments qui
+suivent.
+
+Ce que le mode serveur du moteur impose, et qui dessine tout le reste :
+
+- une **voix clonée est fixée au démarrage** par `--load-voice` ; le corps de
+  requête ne connaît que les voix natives (`speaker`). Un résident porte donc
+  une voix, et servir une autre voix veut dire un autre processus ;
+- il n'expose **ni enrôlement ni voice design**. `/enroll` et `/design` restent
+  des invocations uniques — c'est sans conséquence, elles n'arrivent qu'une fois
+  par voix.
+
+D'où les propriétés du pool :
+
+| | |
+|---|---|
+| Clé | `(modèle, voix)` |
+| Plafond | `QWEN_MAX_RESIDENT`, **2** par défaut |
+| Éviction | le plus anciennement utilisé, jamais un résident occupé |
+| Concurrence | sérialisée par résident — une carte ne fait pas deux synthèses plus vite qu'une |
+| Repli | si le pool ne peut pas servir, la synthèse a lieu quand même en rechargeant les poids |
+
+Le plafond est une contrainte matérielle, pas un réglage de confort : chaque
+résident garde un jeu de poids complet en VRAM, et le dépasser fait tomber la
+carte en OOM au milieu d'un chapitre. `QWEN_POOL=0` rend le comportement
+d'avant, une invocation par synthèse.
+
+**Conséquence pour le backend, quand il attribuera les jobs** : grouper les
+segments par voix. Alterner deux voix sur un pool de deux tient ; en alterner
+cinq ferait payer un chargement à chaque segment, c'est-à-dire pire qu'avant.
+
+**Ce qui reste à mesurer.** Le gain attendu — ~11,5 s → ~2 s sur les segments
+qui suivent le premier d'une voix — **n'a pas encore été mesuré sur GPU**. Le
+coût du premier segment d'une voix (chargement + calcul) ne l'a pas été non
+plus, ni la VRAM réellement occupée par résident, qui décidera si le plafond de
+2 est le bon.
+
+## Ce que l'agent ABO apporte, lui
+
+L'indépendance vis-à-vis de l'hébergeur : connexion sortante, pull du travail,
+plus de protocole Vast. C'est le sujet de `specs/17` côté backend, et il reste
+le chemin critique — mais pour cette raison-là, pas pour la vitesse.

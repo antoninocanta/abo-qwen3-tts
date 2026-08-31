@@ -66,7 +66,14 @@ il ne le définit pas.
 
 - `engines/qwen3_tts` : image construite et publiée, contrat `/enroll`,
   `/synthesize`, `/design` opérationnel en local.
+- **Résidence des poids** : les synthèses passent par un pool de processus
+  `--serve` gardés vivants, un par voix, au lieu d'une invocation par segment.
+  Éprouvé par sept tests sans GPU ; le gain reste **à mesurer sur carte**.
 - `engines/qwen3_tts/worker.py` : proxy PyWorker, **spécifique au serverless
   Vast.ai**. Il reste le seul chemin qui fonctionne aujourd'hui ; l'agent ABO
   le remplacera et rendra le moteur indépendant de tout hébergeur.
 - `agent/` : à écrire.
+
+```bash
+cd engines/qwen3_tts && chmod +x tests/fake_qwen.py && python -m pytest tests -q
+```
