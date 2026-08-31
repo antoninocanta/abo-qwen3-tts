@@ -405,9 +405,15 @@ async def synthesize(payload: SynthesizeRequest) -> dict:
         voice = cached
 
     audio: bytes | None = None
+    # `engine` dit lequel des deux chemins a produit l'audio. Sans lui, un pool
+    # qui se replie silencieusement est indiscernable d'un pool qui marche mal :
+    # les durees seules ne le disent pas, et le log du moteur n'est pas lisible
+    # depuis un worker serverless.
+    source = "reload"
     if POOL_ENABLED:
         try:
             audio = await _synthesize_resident(payload, MODEL_CUSTOM, voice)
+            source = "resident"
         except _PoolUnavailable as failure:
             logger.warning("resident unavailable, falling back: %s", failure)
         except HTTPException:
@@ -419,10 +425,12 @@ async def synthesize(payload: SynthesizeRequest) -> dict:
     if audio is None:
         audio = await _synthesize_once(payload, MODEL_CUSTOM, voice)
 
+    logger.info("synthesized engine=%s chars=%s", source, len(payload.text))
     return {
         "audio_b64": base64.b64encode(audio).decode("ascii"),
         "format": "wav",
         "size_bytes": len(audio),
+        "engine": source,
     }
 
 

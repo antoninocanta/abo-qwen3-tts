@@ -73,7 +73,9 @@ def test_une_voix_ne_charge_ses_poids_qu_une_fois(client):
     victor = voice(b"victor")
 
     for _ in range(3):
-        assert synthesize(client, victor)["format"] == "wav"
+        # `engine` est la seule preuve lisible depuis l'exterieur : sur un worker
+        # serverless, le log du moteur n'est pas accessible.
+        assert synthesize(client, victor)["engine"] == "resident"
 
     assert len(resident_launches()) == 1
 
@@ -116,7 +118,7 @@ def test_un_moteur_qui_ne_demarre_pas_ne_fait_pas_echouer_la_synthese(client, mo
 
     payload = synthesize(client, voice(b"victor"))
 
-    assert payload["format"] == "wav"
+    assert payload["engine"] == "reload"
     # Le resident a bien ete tente, puis l'invocation unique a pris le relais.
     assert len(resident_launches()) == 1
     assert len(launches()) == 2
@@ -127,7 +129,7 @@ def test_le_pool_desactive_rend_le_comportement_d_avant(client, monkeypatch):
     """`QWEN_POOL=0` : une invocation par synthese, comme avant le chantier."""
     monkeypatch.setattr(server, "POOL_ENABLED", False)
 
-    synthesize(client, voice(b"victor"))
+    assert synthesize(client, voice(b"victor"))["engine"] == "reload"
     synthesize(client, voice(b"victor"))
 
     assert not resident_launches()
