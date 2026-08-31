@@ -19,6 +19,17 @@ services:
   qwen3-tts:
     image: antoninocanta/abo-qwen3-tts:v1
     restart: unless-stopped
+    environment:
+      # Le moteur seul : ni certificat Vast, ni proxy PyWorker. Ici c est
+      # l agent qui parle au backend, pas le moteur.
+      ABO_ENGINE_ONLY: "1"
+      # Chaque resident garde un jeu de poids complet en VRAM (~3,9 Go en bf16
+      # pour le 1.7B). Sur une carte de 8 Go, un seul tient — deux la feraient
+      # tomber en OOM au milieu d un chapitre. A relever sur 16 Go et plus.
+      QWEN_MAX_RESIDENT: ${QWEN_MAX_RESIDENT:-1}
+      # Vider pour une machine sans carte : le moteur reste alors sur le CPU,
+      # ce qui est lent mais valide. Voir engines/qwen3_tts/README.md.
+      QWEN_BACKEND: ${QWEN_BACKEND-cuda}
     # Le moteur n est joignable que depuis le reseau du compose.
     expose:
       - "18100"

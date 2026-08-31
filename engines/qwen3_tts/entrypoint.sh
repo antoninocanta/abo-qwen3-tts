@@ -9,6 +9,33 @@ set -euo pipefail
 LOG_FILE="${QWEN_LOG_FILE:-/var/log/abo-qwen.log}"
 touch "$LOG_FILE"
 
+# --- Deux topologies, une seule image -----------------------------------------
+# Vast serverless : le proxy PyWorker est le point d entree et le serveur de
+# modele vit derriere lui, dans le meme conteneur. C est le chemin historique,
+# et il reste le defaut.
+#
+# Ferme ABO : l agent est un conteneur SEPARE (deploy/docker-compose.yml) et
+# joint le moteur par le reseau interne du compose. Le moteur n a alors ni
+# certificat Vast a faire signer ni proxy a lancer — il est le processus
+# principal, et rien de propre a un hebergeur ne doit s executer.
+#
+# C est aussi le mode d un essai local : sans CONTAINER_ID, la signature du
+# certificat echouerait et le conteneur s arreterait avant d avoir rien servi.
+if [ -n "${ABO_ENGINE_ONLY:-}" ]; then
+  echo "starting model server only (ABO_ENGINE_ONLY)" >> "$LOG_FILE"
+  # 0.0.0.0 parce que l appelant est un autre conteneur. Le moteur reste
+  # inatteignable depuis l exterieur : le compose l `expose`, il ne le publie
+  # pas. En Vast au contraire il n ecoute que sur la boucle locale.
+  #
+  # Pas de redirection vers le log : uvicorn devient le processus principal,
+  # donc `docker logs` montre le moteur. C est precisement ce qui manquait
+  # pour diagnostiquer un worker serverless.
+  exec uvicorn server:app \
+    --app-dir /opt/abo \
+    --host "${QWEN_SERVER_HOST:-0.0.0.0}" \
+    --port "${QWEN_SERVER_PORT:-18100}"
+fi
+
 # --- Certificat TLS -----------------------------------------------------------
 # Le proxy sert en HTTPS et attend /etc/instance.{key,crt}. Sur les images de
 # base Vast, leur script de demarrage les fabrique ; cette image n'en descend

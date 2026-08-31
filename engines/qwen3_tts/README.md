@@ -174,38 +174,100 @@ d'avant, une invocation par synthèse.
 segments par voix. Alterner deux voix sur un pool de deux tient ; en alterner
 cinq ferait payer un chargement à chaque segment, c'est-à-dire pire qu'avant.
 
-## Mesuré : la résidence marche, et elle ne gagne rien
+## Le backend : la carte ne sert que si on la demande
 
-Deux parcours identiques le 31/08, six segments chacun sur une voix clonée.
+**Sans `--backend cuda`, le moteur reste entièrement sur le CPU.** C'est écrit
+dans son `main.c` :
 
-| | Chemin | Carte | Segments à chaud (médiane) |
-|---|---|---|---|
-| avant | rechargement par appel | RTX 5070 | **10,0 s** |
-| après | `engine=resident` sur les 6 appels | RTX 5070 Ti | **14,5 s** |
+> *« passing no `--backend` (or `--backend cpu`) leaves the engine 100% on the
+> CPU path. »*
 
-Le champ `engine` confirme que le pool a bien servi : ce n'est pas un repli
-silencieux. Et la carte du second essai est la **plus rapide** des deux.
+`make cuda` compile le support, il ne l'active pas. Trois mesures ont donc
+tourné sur le CPU d'hôtes loués, carte payée et inactive, avant qu'on s'en
+aperçoive.
 
-**Donc le chargement des poids n'était pas le coût dominant d'un segment.** Les
-11,5 s du 31/08 sont du calcul réel. Supprimer le rechargement ne les enlève
-pas, et le pool seul ne rend pas un chapitre praticable.
+La recette complète est en trois morceaux, tous nécessaires :
 
-D'où venait l'erreur : le HANDOFF lisait « le benchmark mesure 2,3 » comme un
-temps par segment. `measured_perf` est un **débit**, en unités par seconde, et
-le `workload_calculator` de `worker.py` compte les caractères. À 5,6 unités/s
-mesurées sur la 5070, une phrase de 55 caractères vaut ~10 s — exactement ce
-qu'on observe. La cible « ~2 s » n'a jamais existé.
+| | |
+|---|---|
+| `--backend cuda` | passé à chaque invocation par `server.py` |
+| `QWEN_CUDA_FUSED_TALKER=1` | Talker + Code Predictor fusionnés, résidents |
+| `QWEN_CUDA_CONVDEC=1` | décodeur de parole sur GPU — **sans lui il reste sur le CPU hôte**, et l'amont mesure l'écart entre RTF 0,94 et 0,39 |
 
-**Ce que le pool sert quand même.** `--batch-size` et `--prefork` du moteur
-n'existent **qu'en mode serveur** : sans processus résident, ils sont hors
-d'atteinte. Le pool est donc la marche d'avant, pas le gain lui-même.
+`QWEN_BACKEND=` vide rend le chemin CPU sans reconstruire l'image : c'est ce
+qui permet à une machine sans carte de servir quand même.
 
-**Pistes réelles, non mesurées** : `--int8` / `--int4` sur le Talker, le
-`--batch-size N` façon vLLM, `--prefork N` qui partage les poids en
-copy-on-write, et le modèle 0.6B. C'est là qu'il faut chercher désormais.
+### Comment on l'a vu
 
-**Toujours pas mesuré** : la VRAM réellement occupée par résident, qui décidera
-si le plafond de 2 est le bon.
+Trois cartes très différentes rendaient la même chose, ce qui n'arrive pas
+quand le GPU travaille :
+
+| Carte | Chemin | Segments à chaud (médiane) |
+|---|---|---|
+| RTX 3090 | rechargement par appel | 11,5 s |
+| RTX 5070 | rechargement par appel | 10,0 s |
+| RTX 5070 Ti | `engine=resident` sur les 6 appels | 14,5 s |
+
+La plus rapide des trois était la plus lente. Et la résidence n'a rien gagné —
+normal : sur CPU, « recharger les poids » veut dire les relire depuis le page
+cache du noyau, ce qui est presque gratuit. Sur GPU au contraire cela signifie
+re-téléverser ~3,9 Go vers la VRAM, et là le pool devient déterminant.
+
+**On avait donc mesuré la résidence dans le seul régime où elle ne pouvait pas
+compter.**
+
+### Ce qu'on attend maintenant
+
+Convention amont : `RTF = temps de calcul ÷ durée d'audio`, **< 1 = plus rapide
+que le temps réel**. Un segment ABO fait ~4,2 s d'audio.
+
+| Contexte | RTF 1.7B | Un segment |
+|---|---|---|
+| **Nous, sur CPU** | 3,4 | 14,5 s |
+| CPU EPYC 9555P, int8, `-j4` | 1,16 | ~5 s |
+| CUDA, carte 4060-class, int8 | 0,55 | ~2,3 s |
+| CUDA, `--quant-mixed` | 0,44 | ~1,8 s |
+| CUDA, estimation 3090/4080-class | 0,13–0,17 | ~0,7 s |
+
+Notre 3,4 était cohérent avec du CPU de cloud médiocre, et **8 à 25× au-dessus**
+de ce que la carte devait rendre.
+
+Prudence sur l'extrapolation : l'amont mesure **0,50 sur A100**, là où la table
+par bande passante prédisait ~0,1 — passé un seuil, le décodage mono-flux
+devient limité par le lancement de kernels. Viser **~2 s de calcul**, pas 0,7.
+
+### Ce qui reste vrai du pool
+
+`--batch-size` et `--prefork` n'existent **qu'en mode serveur** : sans processus
+résident ils sont hors d'atteinte. Et sur GPU, la résidence évite un
+téléversement de VRAM par appel. Le pool était la bonne marche, posée avant que
+l'escalier soit allumé.
+
+**Plafond et VRAM.** Chaque résident garde un jeu de poids complet : ~3,9 Go en
+bf16 pour le 1.7B. Sur 8 Go, `QWEN_MAX_RESIDENT=1` ; sur 16 Go et plus, 2 tient.
+La quantification (`--int8`, `--quant-mixed`) fait tomber l'empreinte et desserre
+ce plafond. La VRAM réellement occupée n'est toujours pas mesurée.
+
+## Faire tourner le moteur seul, sans Vast
+
+`ABO_ENGINE_ONLY=1` lance **uniquement** le serveur de modèle : pas de
+certificat Vast à faire signer, pas de proxy PyWorker. C'est le mode de la ferme
+ABO — l'agent est un conteneur séparé qui joint le moteur par le réseau interne
+(`deploy/docker-compose.yml`) — et c'est aussi celui d'un essai local.
+
+```bash
+docker run --rm --gpus all -e ABO_ENGINE_ONLY=1 -p 18100:18100 \
+  antoninocanta/abo-qwen3-tts:v1
+```
+
+Sur Windows : Docker Desktop avec l'intégration WSL2 et un pilote NVIDIA récent
+suffisent — `--gpus all` y fonctionne, sans installer Linux.
+
+En mode moteur seul, uvicorn est le processus principal, donc **`docker logs`
+montre le moteur**. C'est exactement ce qui manquait pour diagnostiquer un
+worker serverless, où le log vit dans un fichier inatteignable.
+
+Une machine sans carte : ajouter `-e QWEN_BACKEND=` et retirer `--gpus all`.
 
 ## Ce que l'agent ABO apporte, lui
 

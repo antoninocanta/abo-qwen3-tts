@@ -66,9 +66,16 @@ il ne le définit pas.
 
 - `engines/qwen3_tts` : image construite et publiée, contrat `/enroll`,
   `/synthesize`, `/design` opérationnel en local.
+- **Le GPU est enfin demandé.** Sans `--backend cuda`, le moteur reste
+  entièrement sur le CPU — trois mesures ont tourné sur des cartes louées et
+  inactives avant qu'on le voie. Corrigé, **pas encore mesuré**.
 - **Résidence des poids** : les synthèses passent par un pool de processus
   `--serve` gardés vivants, un par voix, au lieu d'une invocation par segment.
-  Éprouvé par sept tests sans GPU ; le gain reste **à mesurer sur carte**.
+  Neuf tests sans GPU ; sur carte, elle évite un téléversement de ~3,9 Go par
+  appel.
+- **Moteur seul** : `ABO_ENGINE_ONLY=1` lance le serveur de modèle sans
+  certificat Vast ni proxy. C'est le mode de la ferme — l'agent est un conteneur
+  séparé — et celui d'un essai local, Windows et Docker Desktop compris.
 - `engines/qwen3_tts/worker.py` : proxy PyWorker, **spécifique au serverless
   Vast.ai**. Il reste le seul chemin qui fonctionne aujourd'hui ; l'agent ABO
   le remplacera et rendra le moteur indépendant de tout hébergeur.
