@@ -50,22 +50,16 @@ MODEL_DESIGN = os.getenv("QWEN_MODEL_DESIGN", "qwen3-tts-voice-design")
 VOICE_CACHE = Path(os.getenv("QWEN_VOICE_CACHE", "/var/cache/abo/voices"))
 TIMEOUT = float(os.getenv("QWEN_TIMEOUT_SECONDS", "600"))
 
-# CPU par defaut, et ce n'est pas un oubli.
+# Sans `--backend`, le moteur reste entierement sur le CPU — c'est ecrit dans
+# son `main.c`. Louer une carte n'y change rien : elle dormirait.
 #
-# Sans `--backend`, le moteur reste entierement sur le CPU (son `main.c` le dit).
-# L'activer accelere par sept... et **ne produit plus de parole** : un souffle
-# uniforme, pic 0,02, aucun silence. Mesure le 31/08 sur RTX 2060 Super et sur
-# RTX 5070 Ti, avec voix native comme avec voix clonee, `--backend cuda` seul
-# suffisant a casser la sortie — les variables `QWEN_CUDA_*` n'y sont pour rien.
+# ATTENTION a ce qui l'accompagne. `QWEN_CUDA_FUSED_TALKER=1` divise le temps
+# par trois et rend de la parole ; `QWEN_CUDA_CONVDEC=1` rend un souffle
+# uniforme — le decodeur de parole sur GPU est faux sur ce moteur. Voir le
+# README. Ne jamais poser CONVDEC sans avoir REECOUTE la sortie.
 #
-# Le `--gpu-selftest` amont PASSE pourtant (matvec_bf16, matmat_bf16). Il ne
-# couvre que ces deux operations ; le reste de la colonne CUDA est marque
-# « GPU-compile-pending » en amont, c'est-a-dire ecrit mais jamais execute sur
-# une vraie carte NVIDIA.
-#
-# `QWEN_BACKEND=cuda` reste possible pour reprendre l'enquete. Ne pas le mettre
-# par defaut tant que la sortie n'est pas validee A L'OREILLE.
-BACKEND = os.getenv("QWEN_BACKEND", "").strip()
+# Vider la variable rend le chemin CPU sans reconstruire l'image.
+BACKEND = os.getenv("QWEN_BACKEND", "cuda").strip()
 
 # Chaque resident garde un jeu de poids complet en VRAM. Le plafond est donc une
 # contrainte materielle, pas un reglage de confort : le depasser fait tomber la

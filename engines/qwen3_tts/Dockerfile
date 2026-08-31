@@ -49,7 +49,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     QWEN_MODEL_DESIGN=qwen3-tts-voice-design \
     QWEN_VOICE_CACHE=/var/cache/abo/voices \
     QWEN_LOG_FILE=/var/log/abo-qwen.log \
-    QWEN_BACKEND= \
+    QWEN_BACKEND=cuda \
+    QWEN_CUDA_FUSED_TALKER=1 \
     WORKER_PORT=3000 \
     REPORT_ADDR=https://run.vast.ai \
     USE_SSL=true
@@ -67,9 +68,13 @@ COPY server.py worker.py entrypoint.sh /opt/abo/
 RUN chmod +x /opt/abo/entrypoint.sh
 RUN mkdir -p /var/cache/abo/voices && touch /var/log/abo-qwen.log
 
-# QWEN_BACKEND vide = CPU. Le backend CUDA amont rend du bruit sur ce moteur
-# (mesure sur 2060 Super et 5070 Ti) ; voir server.py et le README. Ne pas le
-# rallumer par defaut sans avoir reecoute la sortie.
+# QWEN_CUDA_CONVDEC EST VOLONTAIREMENT ABSENT. Le decodeur de parole sur GPU
+# rend un souffle uniforme au lieu de la voix — mesure sur RTX 2060 Super, et le
+# meme symptome sur RTX 5070 Ti. C est la seule des deux variables qui casse ;
+# le Talker fusionne, lui, divise le temps par trois et rend de la parole.
+# L amont le documente comme un gain, mais sa colonne CUDA est marquee
+# « GPU-compile-pending » : ecrite en miroir des kernels Metal, jamais executee
+# sur une carte NVIDIA. Ne pas l ajouter sans reecouter la sortie.
 #
 # 3000 : le port du proxy PyWorker, seul point d entree. Le serveur de modele
 # reste sur 127.0.0.1:18100 et n est jamais joignable de l exterieur.

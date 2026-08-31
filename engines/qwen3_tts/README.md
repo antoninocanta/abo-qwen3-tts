@@ -236,39 +236,56 @@ Prudence sur l'extrapolation : l'amont mesure **0,50 sur A100**, là où la tabl
 par bande passante prédisait ~0,1 — passé un seuil, le décodage mono-flux
 devient limité par le lancement de kernels. Viser **~2 s de calcul**, pas 0,7.
 
-### Mesuré : CUDA va sept fois plus vite et ne parle plus
+### `QWEN_CUDA_CONVDEC` rend du souffle — le reste va bien
 
-**Le backend CUDA amont ne produit pas de parole sur ce moteur.** Un souffle
-uniforme, à la bonne durée, au bon format. Les durées avaient l'air excellentes.
+Le décodeur de parole sur GPU produit un bruit uniforme au lieu de la voix : bon
+format, bonne durée, aucune erreur, et **sept fois plus vite**. Une corruption
+silencieuse, la pire espèce.
 
-| | Pic | Silences | ZCR | |
-|---|---|---|---|---|
-| CPU | 0,23 – 0,54 | 15 – 55 % | 0,05 – 0,15 | parole |
-| CUDA, RTX 2060 Super | **0,02** | **0 %** | ~0,175 | souffle |
-| CUDA, RTX 5070 Ti (Vast) | **0,02** | **0 %** | ~0,175 | souffle |
+Bissection sur une **voix native**, donc sans clonage, chaque variable réellement
+`unset` — `getenv()` teste la présence et non la valeur, donc `VAR=` ne désactive
+rien, et une variable cuite dans l'image reste active même quand on croit ne pas
+la passer :
 
-Bissection sur une **voix native**, donc sans clonage ni enrôlement :
+| Configuration | Sortie | RTF |
+|---|---|---|
+| CPU | parole | 2,98 |
+| `--backend cuda` seul | **parole** | 2,86 |
+| + `QWEN_CUDA_FUSED_TALKER=1` | **parole** | **1,01** |
+| + `QWEN_CUDA_CONVDEC=1` | **souffle** | 2,24 |
+| les deux | **souffle** | — |
 
-| Configuration | Sortie |
+**Le Talker fusionné est un gain réel** — trois fois plus rapide que le CPU, avec
+de la parole. **`CONVDEC` est le seul coupable**, et il l'est même seul. D'où la
+configuration retenue : `--backend cuda` plus `QWEN_CUDA_FUSED_TALKER=1`, et
+**jamais** `CONVDEC`.
+
+Le `--gpu-selftest` amont passe (`matvec_bf16` rel 3,1e-07, `matmat_bf16` rel
+5,7e-07, GEMM 6,24×) mais ne couvre que ces deux opérations. Dans
+`docs/gpu-accel-status.md`, la colonne CUDA porte des ⏳ et des 🔷
+« GPU-compile-pending » : kernels écrits en miroir des jumeaux Metal validés sur
+M1, **jamais exécutés sur une carte NVIDIA**. Leur propre liste de travaux
+s'ouvre sur « NVIDIA box → `--gpu-selftest --backend cuda` ». Le décodeur ConvNet
+en fait partie.
+
+Ce que le défaut coûte : l'amont mesure RTF 0,44-0,55 **avec** CONVDEC. Sans lui
+le décodeur reste sur le CPU hôte et on plafonne vers 0,7. Le correctif vaut donc
+encore un facteur ~1,5, à demander en amont.
+
+### Mesuré, RTX 2060 Super — la configuration retenue
+
+Parcours complet, moteur résident, HTTP local, sortie vérifiée comme parole.
+
+| Étape | Durée |
 |---|---|
-| CPU | parole |
-| `--backend cuda` seul | **bruit** |
-| + `QWEN_CUDA_FUSED_TALKER=1` | bruit |
-| + `QWEN_CUDA_CONVDEC=1` | bruit |
+| `/design` | 15,5 s |
+| `/enroll` | 10,2 s |
+| segment 1 — profil envoyé | 10,3 s |
+| **segments à chaud** | **2,0 – 3,8 s, médiane 2,5 s** |
+| **RTF** | **0,65 – 1,07, médiane 0,71** |
 
-**Le drapeau seul suffit à casser la sortie** ; les variables d'environnement
-n'y sont pour rien, et le clonage non plus.
-
-Le `--gpu-selftest` amont **passe** pourtant sur la même carte —
-`matvec_bf16` rel 3,1e-07, `matmat_bf16` rel 5,7e-07, GEMM 6,24× plus rapide que
-le CPU. Il ne couvre que ces deux opérations. Dans `docs/gpu-accel-status.md`,
-la colonne CUDA porte des ⏳ et des 🔷 « GPU-compile-pending » : écrites en
-miroir des kernels Metal validés sur M1, **jamais exécutées sur une vraie carte
-NVIDIA**. Leur propre liste de travaux commence par « NVIDIA box : `make cuda` →
-`--gpu-selftest --backend cuda` → real cuBLAS RTF ».
-
-Conclusion : `QWEN_BACKEND` est **vide par défaut**. Le GPU reste hors service
-tant que la sortie n'a pas été validée à l'oreille, pas au chronomètre.
+Contre 10,3 s et RTF 2,98 sur le CPU de la même machine : **quatre fois plus
+rapide, et la voix est là.**
 
 ### Ce que le CPU rend vraiment
 

@@ -165,27 +165,12 @@ def test_l_enrolement_reste_une_invocation_unique(client):
     assert not resident_launches()
 
 
-def test_aucun_backend_n_est_impose_par_defaut(client):
-    """Le defaut est le CPU, seul mode qui produise de la parole aujourd'hui.
+def test_le_backend_est_passe_sur_tous_les_chemins(client):
+    """Sans `--backend`, le moteur reste 100 % sur le CPU — son `main.c` le dit.
 
-    Le backend CUDA amont accelere par sept et rend un souffle uniforme. Tant
-    que ce n'est pas corrige, l'activer par defaut livrerait du bruit a tout le
-    monde — et les durees, elles, auraient l'air excellentes.
+    Et il doit couvrir resident, invocation unique et enrolement : n'en equiper
+    qu'une partie reviendrait a comparer deux moteurs sans le savoir.
     """
-    server.MAX_RESIDENT = 2
-    synthesize(client, voice(b"victor"))
-
-    assert launches()
-    assert not any("--backend" in line for line in launches())
-
-
-def test_un_backend_demande_est_passe_sur_tous_les_chemins(client, monkeypatch):
-    """Quand on le demande, il s'applique partout : resident, unique, enrolement.
-
-    L'enquete CUDA reprendra par cette variable ; elle ne doit pas ne couvrir
-    qu'une partie des invocations, sinon on comparerait deux moteurs.
-    """
-    monkeypatch.setattr(server, "BACKEND", "cuda")
     server.MAX_RESIDENT = 2
 
     synthesize(client, voice(b"victor"))
