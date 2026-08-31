@@ -27,9 +27,9 @@ services:
       # pour le 1.7B). Sur une carte de 8 Go, un seul tient — deux la feraient
       # tomber en OOM au milieu d un chapitre. A relever sur 16 Go et plus.
       QWEN_MAX_RESIDENT: ${QWEN_MAX_RESIDENT:-1}
-      # Vider pour une machine sans carte : le moteur reste alors sur le CPU,
-      # ce qui est lent mais valide. Voir engines/qwen3_tts/README.md.
-      QWEN_BACKEND: ${QWEN_BACKEND-cuda}
+      # Vide = CPU, et c est le seul mode qui produise de la parole aujourd hui :
+      # le backend CUDA amont rend du bruit. Voir engines/qwen3_tts/README.md.
+      QWEN_BACKEND: ${QWEN_BACKEND-}
     # Le moteur n est joignable que depuis le reseau du compose.
     expose:
       - "18100"

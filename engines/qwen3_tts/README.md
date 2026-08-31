@@ -236,64 +236,80 @@ Prudence sur l'extrapolation : l'amont mesure **0,50 sur A100**, là où la tabl
 par bande passante prédisait ~0,1 — passé un seuil, le décodage mono-flux
 devient limité par le lancement de kernels. Viser **~2 s de calcul**, pas 0,7.
 
-### Mesuré, RTX 2060 Super, 31/08
+### Mesuré : CUDA va sept fois plus vite et ne parle plus
 
-En local, `ABO_ENGINE_ONLY=1`, HTTP direct — donc **aucun réseau dans le chrono**.
+**Le backend CUDA amont ne produit pas de parole sur ce moteur.** Un souffle
+uniforme, à la bonne durée, au bon format. Les durées avaient l'air excellentes.
 
-| Étape | Durée | |
-|---|---|---|
-| `/design` | 9,8 s | |
-| `/enroll` | 10,5 s | profil 24 Mo |
-| segment 1 — profil envoyé, résident à démarrer | 13,4 s | |
-| segment 2 | 3,7 s | RTF 0,80 |
-| segments 3 à 6 | **1,8 – 2,2 s** | **RTF 0,46 – 0,49** |
+| | Pic | Silences | ZCR | |
+|---|---|---|---|---|
+| CPU | 0,23 – 0,54 | 15 – 55 % | 0,05 – 0,15 | parole |
+| CUDA, RTX 2060 Super | **0,02** | **0 %** | ~0,175 | souffle |
+| CUDA, RTX 5070 Ti (Vast) | **0,02** | **0 %** | ~0,175 | souffle |
 
-Médiane à chaud : **2,0 s**, **RTF 0,47** — dans la fourchette annoncée par
-l'amont, sur une carte de 2019. Contre 14,5 s avant le correctif : **7× plus
-rapide**. `engine=resident` sur les six appels.
+Bissection sur une **voix native**, donc sans clonage ni enrôlement :
 
-Le segment 2 est plus lent que les suivants (0,80 contre 0,47) : c'est la
-première synthèse du résident, autotune et capture de graphes CUDA compris. Le
-coût ne se represente pas.
+| Configuration | Sortie |
+|---|---|
+| CPU | parole |
+| `--backend cuda` seul | **bruit** |
+| + `QWEN_CUDA_FUSED_TALKER=1` | bruit |
+| + `QWEN_CUDA_CONVDEC=1` | bruit |
 
-**VRAM : 4 950 Mo au pic pour un seul résident**, occupation GPU jusqu'à 73 %.
-Donc `QWEN_MAX_RESIDENT=1` sur 8 Go — deux résidents demanderaient ~9,9 Go et ne
-tiendraient pas. 2 tient sur 16 Go, davantage sur 24.
+**Le drapeau seul suffit à casser la sortie** ; les variables d'environnement
+n'y sont pour rien, et le clonage non plus.
 
-### La même image, en local et chez Vast
+Le `--gpu-selftest` amont **passe** pourtant sur la même carte —
+`matvec_bf16` rel 3,1e-07, `matmat_bf16` rel 5,7e-07, GEMM 6,24× plus rapide que
+le CPU. Il ne couvre que ces deux opérations. Dans `docs/gpu-accel-status.md`,
+la colonne CUDA porte des ⏳ et des 🔷 « GPU-compile-pending » : écrites en
+miroir des kernels Metal validés sur M1, **jamais exécutées sur une vraie carte
+NVIDIA**. Leur propre liste de travaux commence par « NVIDIA box : `make cuda` →
+`--gpu-selftest --backend cuda` → real cuBLAS RTF ».
 
-Même image (`sha256:b3b8c904`), même texte, même description de voix.
+Conclusion : `QWEN_BACKEND` est **vide par défaut**. Le GPU reste hors service
+tant que la sortie n'a pas été validée à l'oreille, pas au chronomètre.
 
-| | RTX 2060 Super, local | RTX 5070 Ti, Vast |
-|---|---|---|
-| Segments à chaud | 1,8 – 2,2 s | 3,2 – 5,7 s |
-| **Médiane** | **2,0 s** | **3,5 s** |
-| Démarrage à froid | 4 s | **744 s** (31,8 Go à tirer) |
+### Ce que le CPU rend vraiment
 
-**La carte de 2019 bat la carte de 2025**, parce qu'elle n'est pas derrière
-Internet.
+Ryzen 5 3600 (6C/12T, DDR4-3200, **AVX2 sans VNNI** — le chemin int8 rapide ne
+se déclenche pas), moteur résident, HTTP local :
 
-Le temps mesuré chez Vast contient l'aller-retour réseau ; celui du local est du
-calcul pur, en HTTP direct sur la boucle locale. En régressant les cinq segments
-distants sur leur durée d'audio, on sépare les deux termes :
+| Étape | Durée |
+|---|---|
+| `/design` | 18,9 s |
+| `/enroll` | 6,6 s |
+| segment 1 — profil envoyé | 20,9 s |
+| **segments à chaud** | **9,8 – 12,2 s, médiane 10,3 s** |
+| **RTF** | **2,78 – 3,09, médiane 2,98** |
 
-```text
-temps ≈ 2,6 s de coût fixe + 0,33 × durée d'audio
-```
+Parcours complet vérifié : les sept extraits sont de la parole.
 
-Soit **~2,6 s de réseau et de routage**, et un calcul autour de RTF 0,33 — la
-5070 Ti calcule bien plus vite que la 2060 Super, et le réseau efface l'avantage.
-Cinq points et une mesure influente : l'ordre de grandeur tient, pas la
-décimale.
+Précisions comparées en invocation unique, même texte — l'écart est réel mais
+modeste, et aucune ne descend sous RTF 3 sur ce CPU :
 
-**Conséquence de placement** (`specs/17`) : pour le mode Création, où
-l'utilisateur attend segment par segment, une machine proche et modeste vaut
-mieux qu'une machine lointaine et puissante. La capacité louée sert le débit,
-pas la latence.
+| | bf16 `-j4` | bf16 `-j6` | int8 `-j6` | int4 `-j6` | `--quant-mixed -j6` |
+|---|---|---|---|---|---|
+| Temps | 26,4 s | 19,6 s | 14,8 s | 15,1 s | **14,3 s** |
 
-Et elle ne sert pas l'immédiateté non plus : **douze minutes** pour qu'un worker
-loué existe, le temps de tirer 31,8 Go. Une capacité de débordement se prévoit,
-elle ne s'appelle pas à la demande.
+Au-delà de six threads, ça régresse : `-j12` est plus lent que `-j6` sur les six
+cœurs physiques. Le décodage est borné par la bande passante mémoire, pas par le
+nombre de fils.
+
+**Un segment coûte donc ~10 s sur cette machine.** C'est utilisable pour du
+travail différé, pas pour le mode Création.
+
+### Une leçon de méthode, payée trois fois
+
+Trois campagnes de mesure ont produit des chiffres justes sur un contenu que
+personne n'avait écouté. Le 31/08, les extraits avaient été perdus avec le
+conteneur ; ensuite ils ont été conservés, mais analysés en durée seulement.
+
+Une mesure de performance **doit porter une vérification de contenu**, sinon
+elle récompense exactement ce qu'il ne faut pas : un chemin rapide parce qu'il
+ne calcule pas. Trois indices suffisent à trancher sans écouter — amplitude
+crête, proportion de silences, taux de passage par zéro — et c'est ce qui a fini
+par démasquer CUDA.
 
 ### Ce qui reste vrai du pool
 
