@@ -3,8 +3,8 @@
 Unité de calcul d'ABO. Un PC équipé d'un GPU devient un worker : on l'installe,
 il se déclare, il reçoit du travail.
 
-Statut : **spécification initiale** — l'agent n'existe pas encore, seul le
-moteur Qwen3-TTS est écrit.
+Statut : **l'agent existe et tire du travail** ; le moteur Qwen3-TTS est
+éprouvé sur GPU.
 
 ## L'idée
 
@@ -47,7 +47,7 @@ main, pas pour faire circuler les jobs.
 
 ```text
 abo_worker/
-  agent/      l'agent ABO — à écrire
+  agent/      l'agent ABO : s'enrôle, tire du travail, rend le résultat
   engines/    un répertoire par moteur
     qwen3_tts/    synthèse, clonage, voice design
   deploy/     installation d'une machine et lancement des conteneurs
@@ -77,9 +77,12 @@ il ne le définit pas.
   certificat Vast ni proxy. C'est le mode de la ferme — l'agent est un conteneur
   séparé — et celui d'un essai local, Windows et Docker Desktop compris.
 - `engines/qwen3_tts/worker.py` : proxy PyWorker, **spécifique au serverless
-  Vast.ai**. Il reste le seul chemin qui fonctionne aujourd'hui ; l'agent ABO
-  le remplacera et rendra le moteur indépendant de tout hébergeur.
-- `agent/` : à écrire.
+  Vast.ai**. L'agent ABO le remplace désormais ; il ne sert plus que si l'on
+  revient au serverless de Vast.
+- `agent/` : **écrit et éprouvé de bout en bout**. Il s'enrôle, envoie son
+  pouls, tire un job, appelle le moteur sur `127.0.0.1` et rend le résultat.
+  Aucun port ouvert. `agent/tests/fake_engine.py` rend un WAV valide pour
+  éprouver la chaîne sans carte.
 
 ```bash
 cd engines/qwen3_tts && chmod +x tests/fake_qwen.py && python -m pytest tests -q

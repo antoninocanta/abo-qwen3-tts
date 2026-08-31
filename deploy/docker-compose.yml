@@ -2,17 +2,29 @@
 #
 # L'agent parle aux moteurs sur le reseau interne du compose ; rien n'est
 # publie sur l'hote. La seule connexion qui sort est celle de l'agent vers ABO.
+#
+#   ABO_WORKER_KEY=wk_... ABO_WORKER_SECRET=... docker compose up -d
+#
+# La cle et le secret viennent de la creation du worker cote backend :
+#   python -m app.workers.cli create "PC du bureau" OWNED
 
 services:
   agent:
+    build: ../agent
     image: antoninocanta/abo-worker-agent:v1
     restart: unless-stopped
     environment:
       ABO_BACKEND_URL: ${ABO_BACKEND_URL:-https://api.abo.example}
+      ABO_WORKER_KEY: ${ABO_WORKER_KEY:?identifiant de machine requis}
       ABO_WORKER_SECRET: ${ABO_WORKER_SECRET:?secret d enrolement requis}
-      ABO_WORKER_NAME: ${ABO_WORKER_NAME:-}
-      # Les moteurs joignables, declares au backend a l enrolement.
-      ABO_ENGINES: "qwen3-tts=http://qwen3-tts:18100"
+      # Les moteurs portes, declares au backend a l'enrolement :
+      #   engineKey|modelKey|versionNumber|url
+      # Le backend confronte cette declaration a son registre de modeles : un
+      # moteur qu'il ne connait pas est refuse, pas ignore.
+      ABO_ENGINES: ${ABO_ENGINES:-qwen3_tts|voice.qwen3-tts|1|http://qwen3-tts:18100}
+      # L'agent vit dans son propre conteneur et ne voit pas la carte du moteur.
+      # La declarer sert au placement, jamais a accorder un droit.
+      ABO_WORKER_GPU: ${ABO_WORKER_GPU:-}
     depends_on:
       - qwen3-tts
 
@@ -30,6 +42,9 @@ services:
       # Vider pour une machine sans carte : le moteur reste alors sur le CPU,
       # trois fois plus lent mais valide. Voir engines/qwen3_tts/README.md.
       QWEN_BACKEND: ${QWEN_BACKEND-cuda}
+      # Le talker fusionne est un gain reel. CONVDEC rend un souffle uniforme :
+      # bon format, bonne duree, aucune erreur, et pas de voix. Jamais le poser.
+      QWEN_CUDA_FUSED_TALKER: ${QWEN_CUDA_FUSED_TALKER-1}
     # Le moteur n est joignable que depuis le reseau du compose.
     expose:
       - "18100"
