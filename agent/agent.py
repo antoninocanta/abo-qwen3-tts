@@ -298,7 +298,51 @@ def enrol_voice(
     }
 
 
-HANDLERS = {"TTS": synthesize, "VOICE_CLONE": enrol_voice}
+def design_voice(
+    client: httpx.Client, engine: Engine, job_input: dict, backend: "Backend"
+) -> dict:
+    """Description ecrite -> extrait audio d'une voix inventee.
+
+    Ce mode ne produit **pas** de profil durable : le moteur rend un WAV, pas un
+    `.qvoice`. L'extrait valide devient ensuite l'echantillon de reference d'un
+    clonage, et c'est la seulement que la voix devient une voix.
+    """
+    description = job_input.get("description", "")
+    if not description:
+        raise EngineError("Aucune description dans ce travail.")
+
+    response = _post_engine(
+        client,
+        f"{engine.url}/design",
+        {
+            "description": description,
+            "text": job_input.get("text", ""),
+            "language": job_input.get("language", "French"),
+        },
+    )
+    if response.status_code == 501:
+        # L'image ne porte pas les poids VoiceDesign. C'est une machine mal
+        # equipee, pas une panne : le backend retentera ailleurs.
+        raise EngineError("VoiceDesign absent de cette image.")
+    if response.status_code != 200:
+        raise EngineError(f"{response.status_code} {response.text[:300]}")
+
+    payload = response.json()
+    audio = payload.get("audio_b64")
+    if not audio:
+        raise EngineError("Le moteur n'a rendu aucun extrait.")
+    return {
+        "audioB64": audio,
+        "format": payload.get("format", "wav"),
+        "metrics": {"sizeBytes": payload.get("size_bytes", 0)},
+    }
+
+
+HANDLERS = {
+    "TTS": synthesize,
+    "VOICE_CLONE": enrol_voice,
+    "VOICE_DESIGN": design_voice,
+}
 
 
 def execute(

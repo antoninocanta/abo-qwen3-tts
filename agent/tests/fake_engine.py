@@ -64,6 +64,8 @@ class Handler(BaseHTTPRequestHandler):
             self._enroll(request)
         elif self.path == "/synthesize":
             self._synthesize(request)
+        elif self.path == "/design":
+            self._design(request)
         else:
             self._send(404, {"error": "inconnu"})
 
@@ -84,6 +86,21 @@ class Handler(BaseHTTPRequestHandler):
                 "voice_b64": base64.b64encode(profile).decode(),
                 "sha256": digest,
                 "size_bytes": len(profile),
+            },
+        )
+
+    def _design(self, request: dict) -> None:
+        """Description -> extrait. Aucun profil durable : un WAV, rien d'autre."""
+        if not request.get("description"):
+            self._send(422, {"error": "description manquante"})
+            return
+        audio = tone(1.5)
+        self._send(
+            200,
+            {
+                "audio_b64": base64.b64encode(audio).decode(),
+                "format": "wav",
+                "size_bytes": len(audio),
             },
         )
 
