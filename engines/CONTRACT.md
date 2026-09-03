@@ -96,15 +96,29 @@ l'agent remonte en télémétrie : `peak`, `silence_ratio`, `duration_seconds`.
 Trois moteurs servent cette opération et ne se distinguent que par leur version
 de modèle côté ABO. Le client demande `AUDIO_ENHANCE`, jamais « DeepFilterNet ».
 
-| moteur | ce qu'il fait | où il tourne |
-|---|---|---|
-| `deepfilternet` | filtre le bruit, ne touche pas à la voix | processeur, RTF 0,25 |
-| `clearervoice` | rehausse en 48 kHz, reste fidèle | GPU |
-| `resemble_enhance` | **régénère** la parole | GPU, le plus lent |
+| moteur | ce qu'il fait | où il tourne | mesuré |
+|---|---|---|---|
+| `deepfilternet` | filtre le bruit, ne touche pas à la voix | processeur | 31 dB, 94 % de parole, 4 s |
+| `clearervoice` | rehausse en 48 kHz, reste fidèle | GPU | 85 dB, 97 % de parole, 4 s |
+| `resemble_enhance` | **régénère** la parole | GPU | 59 dB, ~100 % de parole, 21 s |
 
 Le troisième mérite un avertissement : il reconstruit la voix au lieu de la
 filtrer, donc il peut s'écarter de ce qui a été enregistré. C'est un outil
-différent des deux autres, pas une qualité supérieure.
+différent des deux autres, pas une qualité supérieure — et la mesure le dit
+sans ambiguïté, puisqu'il est le seul dont la parole ressort à environ 100 % au
+lieu de 94 ou 97 : les filtres ne peuvent que perdre du signal, celui-ci en
+ajoute.
+
+Il porte deux comportements sur la même image, choisis par la route :
+`mode = "denoise"` retire le bruit sans régénérer, `mode = "enhance"` débruite
+puis reconstruit. `nfe` règle le nombre de pas du solveur — plus haut est plus
+propre et coûte proportionnellement.
+
+**Un moteur n'est pas forcément déterministe, et cela se déclare.**
+`deepfilternet` rend deux fois le même octet ; `clearervoice` varie de façon
+inaudible (non-déterminisme GPU) ; `resemble_enhance` varie **de façon
+audible**, parce que la diffusion échantillonne au hasard. Une reprise après
+panne ne rejoue donc pas le même audio pour les deux derniers.
 
 **Le moteur normalise son entrée lui-même.** Les modèles travaillent en 48 kHz
 mono ; une prise de téléphone en 16 kHz stéréo donnerait un résultat plausible

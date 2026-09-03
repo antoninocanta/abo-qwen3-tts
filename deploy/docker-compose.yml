@@ -121,6 +121,30 @@ services:
               count: 1
               capabilities: [gpu]
 
+  # Nettoyage profond : il **régénère** la parole au lieu de la filtrer. À
+  # réserver aux prises que les deux autres ne sauveraient pas — il peut
+  # s'écarter de ce qui a été prononcé, là où les autres ne peuvent que perdre
+  # du signal.
+  #
+  # Le plus lourd des quatre : image de 16,9 Go, torch 2.1.1 épinglé par
+  # l'amont, donc pas de couche partagée avec les deux autres moteurs.
+  resemble-enhance:
+    profiles: ["enhance-deep"]
+    build: ../engines/resemble_enhance
+    image: antoninocanta/abo-resemble-enhance:v1
+    restart: unless-stopped
+    expose:
+      - "18100"
+    volumes:
+      - ${ABO_ENGINE_DATA:-./data}/weights/resemble-enhance:/weights
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
   # Transfert de jeu. Contrairement aux deux autres, ses poids ne sont pas dans
   # l'image : ils se telechargent au premier appel dans `HF_HOME`, monte depuis
   # le disque de travail. Une image qui les porterait se retelechargerait en
