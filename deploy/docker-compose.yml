@@ -22,9 +22,17 @@
 # au premier travail d'un utilisateur.
 #
 # --- Ou vivent les poids ------------------------------------------------------
-# `ABO_ENGINE_DATA` designe un repertoire de travail, a placer sur le disque
-# qui a la place — pas forcement le plus rapide. Les poids s'y chargent une
-# fois au demarrage ; c'est le calcul qui decide du reste, pas le disque.
+# `ABO_ENGINE_DATA` designe un repertoire de travail. Les poids y sont **montes**
+# plutot que cuits dans les images : une image qui les porte se retelecharge en
+# entier a chaque correction du serveur, et elle fige l'endroit ou ils vivent.
+# Ils s'y chargent une fois au demarrage ; c'est le calcul qui decide du reste,
+# pas le disque.
+#
+# Le placer sur un disque **amovible** est une fausse bonne idee. Cela marche —
+# eprouve — mais un moteur dont les poids sont sur un cable ne demarre plus
+# quand on le debranche, et la machine reste dans la ferme en promettant une
+# capacite qu'elle ne sert plus. Un repertoire du disque systeme est le defaut
+# raisonnable ; un second disque **interne** est le bon endroit s'il y en a un.
 
 services:
   agent:
