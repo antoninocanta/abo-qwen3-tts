@@ -7,6 +7,24 @@
 #
 # La cle et le secret viennent de la creation du worker cote backend :
 #   python -m app.workers.cli create "PC du bureau" OWNED
+#
+# --- Choisir ce que la machine porte -----------------------------------------
+# Les moteurs sont derriere des **profils** : une machine n'a aucune raison de
+# lancer trois conteneurs de plusieurs gigaoctets pour n'en servir qu'un, et une
+# machine sans carte ne doit pas tenter d'en demander une.
+#
+#   docker compose --profile tts up -d              la synthese Qwen (GPU)
+#   docker compose --profile enhance-cpu up -d      le nettoyage rapide (CPU)
+#   docker compose --profile tts --profile enhance-cpu up -d
+#
+# `ABO_ENGINES` doit s'accorder avec les profils lances : declarer un moteur
+# qu'on ne fait pas tourner fait entrer dans la ferme une machine qui echouera
+# au premier travail d'un utilisateur.
+#
+# --- Ou vivent les poids ------------------------------------------------------
+# `ABO_ENGINE_DATA` designe un repertoire de travail, a placer sur le disque
+# qui a la place — pas forcement le plus rapide. Les poids s'y chargent une
+# fois au demarrage ; c'est le calcul qui decide du reste, pas le disque.
 
 services:
   agent:
@@ -25,10 +43,9 @@ services:
       # L'agent vit dans son propre conteneur et ne voit pas la carte du moteur.
       # La declarer sert au placement, jamais a accorder un droit.
       ABO_WORKER_GPU: ${ABO_WORKER_GPU:-}
-    depends_on:
-      - qwen3-tts
 
   qwen3-tts:
+    profiles: ["tts"]
     image: antoninocanta/abo-qwen3-tts:v1
     restart: unless-stopped
     # Forme liste, et pas mappage, pour une seule raison : c'est la seule qui
@@ -62,6 +79,64 @@ services:
       - "18100"
     volumes:
       - voice_cache:/var/cache/abo/voices
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Nettoyage de bruit. Le seul moteur qui ne demande pas de carte, et le seul
+  # dont les poids tiennent dans le binaire : rien a telecharger, rien a monter.
+  #
+  #   ABO_ENGINES=deepfilternet|audio.deepfilternet|1|http://deepfilternet:18100
+  deepfilternet:
+    profiles: ["enhance-cpu"]
+    build: ../engines/deepfilternet
+    image: antoninocanta/abo-deepfilternet:v1
+    restart: unless-stopped
+    expose:
+      - "18100"
+
+  # Rehaussement 48 kHz. Plus agressif que DeepFilterNet et plus fidele a la
+  # voix, mais il demande une carte : mesure du 03/09 sur RTX 2060 Super,
+  # 85,3 dB de bruit retire contre 31, et 97 % de la parole conservee contre 94.
+  # Il efface en revanche **toute** la piece entre les mots — a ecouter avant de
+  # le choisir par defaut.
+  clearervoice:
+    profiles: ["enhance-gpu"]
+    build: ../engines/clearervoice
+    image: antoninocanta/abo-clearervoice:v1
+    restart: unless-stopped
+    expose:
+      - "18100"
+    volumes:
+      - ${ABO_ENGINE_DATA:-./data}/weights/clearervoice:/weights
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Transfert de jeu. Contrairement aux deux autres, ses poids ne sont pas dans
+  # l'image : ils se telechargent au premier appel dans `HF_HOME`, monte depuis
+  # le disque de travail. Une image qui les porterait se retelechargerait en
+  # entier a chaque correction du serveur.
+  #
+  #   ABO_ENGINE_DATA=D:/abo-engines docker compose --profile transfer up -d
+  #   ABO_ENGINES=chatterbox|voice.chatterbox|1|http://chatterbox:18100
+  chatterbox:
+    profiles: ["transfer"]
+    build: ../engines/chatterbox
+    image: antoninocanta/abo-chatterbox:v1
+    restart: unless-stopped
+    expose:
+      - "18100"
+    volumes:
+      - ${ABO_ENGINE_DATA:-./data}/weights/chatterbox:/weights
     deploy:
       resources:
         reservations:
