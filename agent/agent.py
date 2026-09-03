@@ -215,7 +215,11 @@ def _post_engine(client: httpx.Client, url: str, body: dict) -> httpx.Response:
 
 
 def synthesize(
-    client: httpx.Client, engine: Engine, job_input: dict, backend: "Backend"
+    client: httpx.Client,
+    engine: Engine,
+    job_input: dict,
+    backend: "Backend",
+    config: dict,
 ) -> dict:
     """Texte -> WAV. Le profil de voix appartient au backend, pas a la machine.
 
@@ -261,7 +265,11 @@ def synthesize(
 
 
 def enrol_voice(
-    client: httpx.Client, engine: Engine, job_input: dict, backend: "Backend"
+    client: httpx.Client,
+    engine: Engine,
+    job_input: dict,
+    backend: "Backend",
+    config: dict,
 ) -> dict:
     """Echantillon + transcription -> profil de voix.
 
@@ -299,7 +307,11 @@ def enrol_voice(
 
 
 def design_voice(
-    client: httpx.Client, engine: Engine, job_input: dict, backend: "Backend"
+    client: httpx.Client,
+    engine: Engine,
+    job_input: dict,
+    backend: "Backend",
+    config: dict,
 ) -> dict:
     """Description ecrite -> extrait audio d'une voix inventee.
 
@@ -338,10 +350,102 @@ def design_voice(
     }
 
 
+def enhance_audio(
+    client: httpx.Client,
+    engine: Engine,
+    job_input: dict,
+    backend: "Backend",
+    config: dict,
+) -> dict:
+    """Une prise bruitee -> la meme prise, nettoyee.
+
+    Trois moteurs servent cette operation et rendent trois qualites : un filtre
+    rapide sur processeur, un rehaussement fidele en 48 kHz, une regeneration
+    qui reconstruit la parole. L'agent n'arbitre pas entre eux — le backend a
+    deja resolu quelle version execute ce travail, et la machine ne porte que
+    ce qu'elle a declare.
+
+    Ce que `config` transporte vient de la **route**, jamais de cette machine :
+    c'est ainsi qu'un meme moteur peut debruiter ici et regenerer la, sans deux
+    images ni deux cles de moteur.
+    """
+    audio = job_input.get("audioB64")
+    if not audio:
+        raise EngineError("Aucun audio a nettoyer dans ce travail.")
+
+    response = _post_engine(
+        client, f"{engine.url}/enhance", {"audio_b64": audio, "config": config}
+    )
+    if response.status_code != 200:
+        raise EngineError(f"{response.status_code} {response.text[:300]}")
+
+    payload = response.json()
+    cleaned = payload.get("audio_b64")
+    if not cleaned:
+        raise EngineError("Le moteur n'a rendu aucun audio.")
+    return {
+        "audioB64": cleaned,
+        "format": payload.get("format", "wav"),
+        "metrics": {
+            "sizeBytes": payload.get("size_bytes", 0),
+            "enginePath": payload.get("engine", "unknown"),
+        },
+    }
+
+
+def transfer_performance(
+    client: httpx.Client,
+    engine: Engine,
+    job_input: dict,
+    backend: "Backend",
+    config: dict,
+) -> dict:
+    """Le jeu d'une prise, le timbre d'une autre.
+
+    Deux entrees, et les confondre rendrait la bonne voix disant la mauvaise
+    chose : `audioB64` porte la **performance** — le rythme, l'intention, les
+    respirations — et `referenceB64` porte le **timbre** a lui preter.
+
+    La reference est un echantillon audio et jamais un `.qvoice` : ce moteur ne
+    parle pas le format de Qwen. C'est le backend qui choisit lequel envoyer,
+    et il envoie l'echantillon d'origine — celui qu'`ADR-004` exige de garder
+    precisement pour qu'un autre moteur puisse le lire.
+    """
+    performance = job_input.get("audioB64")
+    reference = job_input.get("referenceB64")
+    if not performance:
+        raise EngineError("Aucune performance dans ce travail.")
+    if not reference:
+        raise EngineError("Aucune voix de reference dans ce travail.")
+
+    response = _post_engine(
+        client,
+        f"{engine.url}/convert",
+        {"audio_b64": performance, "reference_b64": reference, "config": config},
+    )
+    if response.status_code != 200:
+        raise EngineError(f"{response.status_code} {response.text[:300]}")
+
+    payload = response.json()
+    converted = payload.get("audio_b64")
+    if not converted:
+        raise EngineError("Le moteur n'a rendu aucun audio.")
+    return {
+        "audioB64": converted,
+        "format": payload.get("format", "wav"),
+        "metrics": {
+            "sizeBytes": payload.get("size_bytes", 0),
+            "enginePath": payload.get("engine", "unknown"),
+        },
+    }
+
+
 HANDLERS = {
     "TTS": synthesize,
     "VOICE_CLONE": enrol_voice,
     "VOICE_DESIGN": design_voice,
+    "AUDIO_ENHANCE": enhance_audio,
+    "PERFORMANCE_TRANSFER": transfer_performance,
 }
 
 
@@ -358,8 +462,12 @@ def execute(
     if handler is None:
         raise EngineError(f"Operation non servie par cet agent : {assignment['operation']}")
 
+    # Le reglage vient de la route. Un backend plus ancien n'en envoie pas :
+    # l'absence vaut « rien de particulier », pas une erreur.
+    config = assignment.get("engineConfig") or {}
+
     started = time.monotonic()
-    payload = handler(client, engine, assignment.get("input") or {}, backend)
+    payload = handler(client, engine, assignment.get("input") or {}, backend, config)
     payload["metrics"]["computeMs"] = int((time.monotonic() - started) * 1000)
     return payload
 

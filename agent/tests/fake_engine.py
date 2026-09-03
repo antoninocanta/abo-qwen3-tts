@@ -66,6 +66,10 @@ class Handler(BaseHTTPRequestHandler):
             self._synthesize(request)
         elif self.path == "/design":
             self._design(request)
+        elif self.path == "/enhance":
+            self._enhance(request)
+        elif self.path == "/convert":
+            self._convert(request)
         else:
             self._send(404, {"error": "inconnu"})
 
@@ -101,6 +105,72 @@ class Handler(BaseHTTPRequestHandler):
                 "audio_b64": base64.b64encode(audio).decode(),
                 "format": "wav",
                 "size_bytes": len(audio),
+            },
+        )
+
+    def _transform(self, raw: bytes, gain: float) -> bytes:
+        """Rejoue l'entree en changeant son amplitude, et rien d'autre.
+
+        Un faux moteur qui rendrait un ton fabrique passerait tous les
+        controles de format **sans avoir lu son entree** : le jour ou
+        l'hydratation cesserait d'envoyer l'audio, le test resterait vert. En
+        derivant la sortie de l'entree, un pic mesure a la bonne valeur prouve
+        que les octets ont fait l'aller-retour.
+        """
+        with wave.open(io.BytesIO(raw), "rb") as source:
+            params = source.getparams()
+            frames = source.readframes(source.getnframes())
+
+        samples = struct.unpack(f"<{len(frames) // 2}h", frames)
+        louder = b"".join(
+            struct.pack("<h", max(-32768, min(32767, int(value * gain))))
+            for value in samples
+        )
+        buffer = io.BytesIO()
+        with wave.open(buffer, "wb") as target:
+            target.setparams(params)
+            target.writeframes(louder)
+        return buffer.getvalue()
+
+    def _enhance(self, request: dict) -> None:
+        """Audio -> le meme audio, transforme de facon mesurable."""
+        audio = request.get("audio_b64")
+        if not audio:
+            self._send(422, {"error": "aucun audio a nettoyer"})
+            return
+        # Le reglage de la route arrive jusqu'ici : c'est ce qui distingue deux
+        # versions d'un meme moteur, et un test doit pouvoir le constater.
+        mode = (request.get("config") or {}).get("mode", "denoise")
+        cleaned = self._transform(base64.b64decode(audio), 0.5)
+        self._send(
+            200,
+            {
+                "audio_b64": base64.b64encode(cleaned).decode(),
+                "format": "wav",
+                "size_bytes": len(cleaned),
+                "engine": f"fake-enhance:{mode}",
+            },
+        )
+
+    def _convert(self, request: dict) -> None:
+        """Performance + timbre -> une prise. Les deux entrees sont exigees."""
+        performance = request.get("audio_b64")
+        if not performance:
+            self._send(422, {"error": "aucune performance"})
+            return
+        if not request.get("reference_b64"):
+            # Un moteur de conversion sans timbre de reference ne peut rien
+            # rendre : c'est un refus, pas un repli sur une voix par defaut.
+            self._send(422, {"error": "aucune voix de reference"})
+            return
+        converted = self._transform(base64.b64decode(performance), 1.5)
+        self._send(
+            200,
+            {
+                "audio_b64": base64.b64encode(converted).decode(),
+                "format": "wav",
+                "size_bytes": len(converted),
+                "engine": "fake-convert",
             },
         )
 
