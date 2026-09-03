@@ -12,8 +12,10 @@ Un moteur ne connait ni ABO, ni job, ni compte. Ce module non plus.
 import base64
 import binascii
 import io
+import os
 import struct
 import wave
+from pathlib import Path
 
 from fastapi.responses import JSONResponse
 
@@ -131,6 +133,28 @@ def inspect(raw: bytes) -> dict:
         "silenceRatio": round(quiet / len(samples), 4),
         "durationSeconds": round(len(samples) / rate, 3) if rate else 0.0,
     }
+
+
+def weights_present(marker: str | None = None, root: str | None = None) -> bool:
+    """Y a-t-il vraiment des poids, ou seulement un repertoire vide ?
+
+    `Path.exists()` sur `HF_HOME` ne prouve rien : l'image cree ce repertoire,
+    donc il existe toujours. Un moteur qui s'en contentait repondait
+    `engine: true` sans rien avoir a servir — et depuis qu'`ABOB-128` fait
+    attendre l'agent sur cette reponse, une sante qui ment ne retarde plus
+    l'echec, elle le garantit.
+
+    `marker` nomme le fichier qui prouve la presence quand on le connait ; sans
+    lui, un seul fichier quelque part sous la racine suffit. La recherche
+    s'arrete au premier trouve : un cache HuggingFace porte des milliers
+    d'entrees et `/health` est appele toutes les trente secondes.
+    """
+    base = Path(root or os.getenv("HF_HOME", "/weights"))
+    if not base.is_dir():
+        return False
+    if marker:
+        return (base / marker).exists()
+    return next((path for path in base.rglob("*") if path.is_file()), None) is not None
 
 
 def rendered(raw: bytes, engine: str) -> dict:

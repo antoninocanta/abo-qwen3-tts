@@ -73,19 +73,54 @@ docker compose --profile enhance-cpu up -d                 # nettoyage, sans GPU
 docker compose --profile tts --profile transfer up -d      # synthèse + jeu
 ```
 
-## Les poids ne sont pas dans les images — sauf pour Qwen
+## Les poids sont dans les images
 
-| moteur | poids | pourquoi |
-|---|---|---|
-| `qwen3_tts` | **dans l'image** | sur une instance louée réveillée à froid, retélécharger plusieurs gigaoctets coûte plus cher que le stockage |
-| les trois autres | **montés** depuis `ABO_ENGINE_DATA` | sur un PC qu'on possède, cette raison tombe — et une image qui porte ses poids se retélécharge en entier à chaque correction du serveur |
+Depuis `ADR-009` § 9, et pour les cinq moteurs. Une machine qui tire une image
+est prête à servir : il n'y a rien à monter, rien à préparer, et rien à
+télécharger au premier travail d'un utilisateur.
 
 ```bash
-ABO_ENGINE_DATA=/mnt/disque-de-travail docker compose --profile transfer up -d
+docker compose --profile transfer up -d
 ```
 
-Les poids se chargent une fois au démarrage : un disque lent ne coûte que ce
-démarrage, c'est le calcul qui décide du reste.
+La règle précédente — poids montés depuis `ABO_ENGINE_DATA` — reposait sur une
+**prémisse fausse** : « une image qui les porte se retélécharge en entier à
+chaque correction du serveur ». `docker pull` ne récupère que les couches
+**manquantes**. Les poids étant écrits sous le `COPY server.py`, corriger le
+serveur ne coûte que la dernière couche, quelques kilo-octets.
+
+Ce qui reste vrai de l'ancienne raison — la place sur la machine qui construit —
+ne justifie pas de faire attendre une carte louée pendant qu'elle télécharge un
+gigaoctet.
+
+**Ne remettez pas de volume sur `/weights`.** Il masquerait les poids cuits, et
+donnerait le pire des deux mondes : une image lourde *et* un téléchargement au
+premier appel. `ABO_ENGINE_DATA` n'est plus lu par aucun service.
+
+## Les images sont publiées, toutes
+
+| image | contenu |
+|---|---|
+| `abo-worker-agent:v1` | l'agent, 196 Mo, sans poids ni torch |
+| `abo-engine-base:cuda` | le socle torch partagé par trois moteurs |
+| `abo-deepfilternet:v1` | nettoyage rapide, processeur, 268 Mo |
+| `abo-clearervoice:v1` | rehaussement 48 kHz, GPU |
+| `abo-chatterbox:v1` | transfert de jeu, GPU |
+| `abo-resemble-enhance:v1` | nettoyage profond, GPU, le plus lourd |
+| `abo-qwen3-tts:v1` | synthèse, clonage, conception — 31,8 Go |
+
+Jusqu'au 03/09 le workflow ne publiait que Qwen, et `abo-engine-base` n'existait
+que sur la machine de développement : les trois moteurs torch qui en descendent
+étaient donc **introuvables ailleurs**. Une machine louée ne pouvait ni les
+construire ni les tirer.
+
+Qwen ne se reconstruit plus à chaque poussée — 31,8 Go pour une image qui change
+rarement. Il reste à un clic, case à cocher sur « Run workflow ».
+
+**Référencer par digest, jamais par `:v1`.** Un tag mobile n'est pas
+retéléchargé par une machine qui l'a déjà en cache : elle sert l'ancienne image
+sans que rien ne le signale, et ça coûte une location de GPU pour rien. Le
+workflow imprime le digest de chaque image dans son résumé.
 
 ## Ce que chaque moteur fait, mesuré
 
@@ -185,6 +220,16 @@ il ne le définit pas.
   pouls, tire un job, appelle le moteur sur `127.0.0.1` et rend le résultat.
   Aucun port ouvert. `agent/tests/fake_engine.py` rend un WAV valide pour
   éprouver la chaîne sans carte.
+- **L'agent attend son moteur avant de s'enrôler** (0.2.0, `ABOB-128`). Il
+  interroge `/health` et exige `engine: true` ; sans cela il renonce plutôt que
+  de rejoindre la ferme. S'enrôler d'abord et découvrir ensuite ferait entrer
+  une machine qui promet une capacité qu'elle ne sert pas — et sur une machine
+  **louée**, elle reçoit le travail d'un utilisateur, échoue, et l'heure est
+  facturée quand même.
+- **Trois `/health` mentaient** : ils répondaient `engine: true` dès que le
+  répertoire de poids existait, or l'image le crée toujours. Ils vérifient
+  maintenant qu'il y a vraiment des octets dedans — `aboengine.weights_present()`.
+  Une santé qui ment ne retardait pas l'échec, elle le garantissait.
 
 ```bash
 cd engines/qwen3_tts && chmod +x tests/fake_qwen.py && python -m pytest tests -q

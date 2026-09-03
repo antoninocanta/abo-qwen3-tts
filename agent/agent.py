@@ -20,6 +20,9 @@ Configuration, par l'environnement :
                          `engineKey|modelKey|versionNumber|url`
     ABO_WORKER_GPU       carte declaree, quand l'agent ne peut pas la voir
                          lui-meme (il tourne dans son propre conteneur)
+    ABO_AGENT_ENGINE_READY_TIMEOUT
+                         combien de temps un moteur a pour devenir servable
+                         avant que l'agent renonce a rejoindre la ferme
 """
 import logging
 import os
@@ -31,7 +34,7 @@ import time
 
 import httpx
 
-AGENT_VERSION = "0.1.0"
+AGENT_VERSION = "0.2.0"
 
 BACKEND_URL = os.getenv("ABO_BACKEND_URL", "http://127.0.0.1:8000").rstrip("/")
 WORKER_KEY = os.getenv("ABO_WORKER_KEY", "")
@@ -48,6 +51,12 @@ HEARTBEAT_SECONDS = float(os.getenv("ABO_AGENT_HEARTBEAT_SECONDS", "30"))
 # et un chapitre entier bien davantage.
 ENGINE_TIMEOUT = float(os.getenv("ABO_AGENT_ENGINE_TIMEOUT", "900"))
 BACKEND_TIMEOUT = float(os.getenv("ABO_AGENT_BACKEND_TIMEOUT", "120"))
+# Combien de temps on laisse un moteur devenir servable avant de renoncer.
+# Large a dessein : depuis `ADR-009` les poids sont cuits dans l'image et la
+# reponse est immediate, mais un conteneur qui demarre sur une machine louee
+# partage son disque avec le telechargement de l'image voisine.
+ENGINE_READY_TIMEOUT = float(os.getenv("ABO_AGENT_ENGINE_READY_TIMEOUT", "600"))
+ENGINE_READY_POLL_SECONDS = float(os.getenv("ABO_AGENT_ENGINE_READY_POLL", "3"))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout
@@ -131,6 +140,74 @@ def hardware() -> dict:
                 info["gpu"] = name.strip()
                 info["vram"] = memory.strip()
     return info
+
+
+def engine_is_ready(client: httpx.Client, engine: "Engine") -> tuple[bool, str]:
+    """Interroge `/health` et croit ce qu'il dit du **moteur**, pas du serveur.
+
+    Un serveur HTTP qui repond n'a jamais prouve qu'un modele etait chargeable.
+    C'est la distinction que `engines/CONTRACT.md` impose, et le champ `engine`
+    est precisement la pour ca.
+    """
+    try:
+        response = client.get(f"{engine.url}/health", timeout=10)
+    except httpx.HTTPError as failure:
+        return False, f"injoignable ({failure})"
+    if response.status_code != 200:
+        return False, f"health {response.status_code}"
+    try:
+        body = response.json()
+    except ValueError:
+        return False, "health illisible"
+    if not body.get("engine"):
+        return False, "moteur pas encore servable"
+    return True, str(body.get("enginePath") or "?")
+
+
+def wait_for_engines(client: httpx.Client, engines: list["Engine"]) -> None:
+    """Ne rejoint la ferme que quand les moteurs savent vraiment travailler.
+
+    S'enroler d'abord et decouvrir ensuite reviendrait a faire entrer dans la
+    ferme une machine qui promet une capacite qu'elle ne sert pas — exactement
+    ce contre quoi `CONTRACT.md` met en garde, et ce qui se paie le plus cher
+    sur une machine **louee** : elle recoit le travail d'un utilisateur, echoue,
+    et l'heure est facturee quand meme.
+
+    Renoncer est un arret, pas un avertissement. C'est la meme regle que pour
+    un `ABO_ENGINES` mal forme : une machine a moitie capable est pire qu'une
+    machine absente, parce que la ferme compte sur elle.
+    """
+    deadline = time.monotonic() + ENGINE_READY_TIMEOUT
+    pending = list(engines)
+    reasons: dict[str, str] = {}
+
+    while True:
+        still_waiting = []
+        for engine in pending:
+            ready, detail = engine_is_ready(client, engine)
+            if ready:
+                logger.info("moteur pret : %s -> %s", engine.engine_key, detail)
+            else:
+                still_waiting.append(engine)
+                reasons[engine.engine_key] = detail
+
+        pending = still_waiting
+        if not pending:
+            return
+
+        if time.monotonic() >= deadline:
+            details = ", ".join(f"{key} : {why}" for key, why in sorted(reasons.items()))
+            raise SystemExit(
+                f"Moteurs toujours pas servables apres {ENGINE_READY_TIMEOUT:.0f} s "
+                f"— {details}. Cette machine ne rejoint pas la ferme."
+            )
+
+        logger.info(
+            "en attente de %s moteur(s) : %s",
+            len(pending),
+            ", ".join(f"{e.engine_key} ({reasons[e.engine_key]})" for e in pending),
+        )
+        time.sleep(ENGINE_READY_POLL_SECONDS)
 
 
 class Backend:
@@ -487,6 +564,10 @@ def run() -> None:
 
     with httpx.Client() as client:
         backend = Backend(client)
+        # Les moteurs d'abord, la ferme ensuite. L'ordre est le sujet
+        # d'`ABOB-128` : declarer une capacite avant de l'avoir est une panne
+        # qu'on fait decouvrir a un utilisateur.
+        wait_for_engines(client, engines)
         backend.enrol(engines)
 
         last_heartbeat = 0.0
@@ -499,7 +580,12 @@ def run() -> None:
                     if pulse.get("mustEnrol"):
                         # Le backend l'avait declaree perdue : ses capacites
                         # datent d'avant sa disparition, elle se redeclare.
+                        # Et elle repasse par la meme porte — si elle a ete
+                        # declaree perdue parce que son moteur est tombe, se
+                        # redeclarer sans verifier la remettrait en ligne
+                        # exactement aussi cassee qu'avant.
                         logger.info("redeclaration demandee")
+                        wait_for_engines(client, engines)
                         backend.enrol(engines)
 
                 assignment = backend.lease()

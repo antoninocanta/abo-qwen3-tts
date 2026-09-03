@@ -1,9 +1,29 @@
-name: engines
+# Construction et publication des images du worker.
+#
+# Ce qui a change le 03/09 (`ADR-009`, `ABOB-127`) : ce workflow ne publiait
+# que Qwen. Le socle `abo-engine-base` n'existait que sur la machine de
+# developpement, donc les trois moteurs torch qui en descendent etaient
+# introuvables ailleurs — personne d'autre ne pouvait les construire ni les
+# tirer, et une machine louee encore moins.
+#
+# L'ordre compte : le socle d'abord, les moteurs ensuite, epingles sur le tag
+# du commit courant pour que socle et moteur ne puissent pas diverger.
+name: images
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      qwen:
+        description: "Reconstruire aussi l'image Qwen (31,8 Go, une heure)"
+        type: boolean
+        default: false
+
+env:
+  # Le compte Docker Hub vit dans les secrets ; le nom d'image, non — il voyage
+  # deja dans `deploy/docker-compose.yml` et dans les gabarits de location.
+  REGISTRY_USER: ${{ secrets.DOCKERHUB_USERNAME }}
 
 jobs:
   # Le pool de moteurs residents s'eprouve sans GPU, avec un faux moteur. C'est
@@ -30,8 +50,192 @@ jobs:
           chmod +x tests/fake_qwen.py
           python -m pytest tests -q
 
-  image:
+  # L'agent : minuscule, sans poids, sans torch. Il se construit en une minute
+  # et c'est lui qu'on corrige le plus souvent.
+  agent:
     needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: agent
+          push: true
+          tags: |
+            ${{ env.REGISTRY_USER }}/abo-worker-agent:v1
+            ${{ env.REGISTRY_USER }}/abo-worker-agent:latest
+            ${{ env.REGISTRY_USER }}/abo-worker-agent:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY_USER }}/abo-worker-agent:v1
+          cache-to: type=inline
+
+  # Le socle torch, partage par trois moteurs. Il se reconstruit a chaque fois
+  # sans que cela coute : `docker push` ne televerse que les couches absentes du
+  # registre, donc un socle inchange est un no-op de quelques secondes.
+  #
+  # Le tag par commit n'est pas decoratif — c'est lui que les moteurs epinglent
+  # plus bas, et c'est ce qui interdit qu'un moteur soit construit sur un socle
+  # qui n'est pas celui de son propre commit.
+  base:
+    needs: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: engines/base
+          push: true
+          tags: |
+            ${{ env.REGISTRY_USER }}/abo-engine-base:cuda
+            ${{ env.REGISTRY_USER }}/abo-engine-base:cuda-${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY_USER }}/abo-engine-base:cuda
+          cache-to: type=inline
+
+  engines:
+    needs: [tests, base]
+    runs-on: ubuntu-latest
+    strategy:
+      # Un moteur qui casse ne doit pas empecher les trois autres d'etre
+      # publies : ils sont independants, et publier trois moteurs sur quatre
+      # vaut mieux que zero.
+      fail-fast: false
+      matrix:
+        include:
+          # Le seul qui ne descend pas du socle : ses poids tiennent dans un
+          # binaire statique, et il n'a pas de torch du tout.
+          - engine: deepfilternet
+            image: abo-deepfilternet
+          - engine: chatterbox
+            image: abo-chatterbox
+          - engine: clearervoice
+            image: abo-clearervoice
+          - engine: resemble_enhance
+            image: abo-resemble-enhance
+    steps:
+      - uses: actions/checkout@v4
+
+      # Le runner part avec une quinzaine de gigaoctets libres. Le socle en
+      # pese 9,4, et Resemble Enhance porte en plus son propre torch : sans ce
+      # menage, la construction casse **tard**, apres les telechargements.
+      - name: Liberer de l espace
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # `id` : le digest publie plus bas se lit dans les sorties de cette
+      # etape-ci. Sans lui, l'etape de resume affiche une chaine vide et le
+      # gabarit de location se retrouve sans reference immuable.
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: engines/${{ matrix.engine }}
+          push: true
+          # `BASE_IMAGE` n'est lu que par les trois moteurs torch ; le passer a
+          # DeepFilterNet est sans effet, son `FROM` est en dur.
+          build-args: |
+            BASE_IMAGE=${{ env.REGISTRY_USER }}/abo-engine-base:cuda-${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY_USER }}/${{ matrix.image }}:v1
+            ${{ env.REGISTRY_USER }}/${{ matrix.image }}:latest
+            ${{ env.REGISTRY_USER }}/${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=registry,ref=${{ env.REGISTRY_USER }}/${{ matrix.image }}:v1
+          cache-to: type=inline
+
+      # Le digest est ce que le backend confronte a `model_versions.container_digest`
+      # (`ADR-009` § 6) et ce qu'un gabarit de location doit referencer : un tag
+      # mobile comme `:v1` n'est PAS retelecharge par une machine qui l'a deja
+      # en cache, elle sert l'ancienne image sans que rien ne le signale.
+      - name: Digest a reporter
+        run: |
+          echo "### ${{ matrix.image }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.REGISTRY_USER }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # Une image = un worker complet, pour les machines louees.
+  #
+  # Un hebergeur a la demande lance UNE image par instance : il n'y a pas d'hote
+  # ou poser un `docker compose`, donc la topologie « agent + moteur en deux
+  # conteneurs » de la ferme ne s'y transpose pas. Ces variantes ajoutent une
+  # couche mince — l'agent, `httpx`, un entrypoint — sur le moteur qui vient
+  # d'etre publie.
+  #
+  # Le contexte est la racine du depot : `agent/` et `engines/` sont deux
+  # branches differentes de l'arborescence.
+  standalone:
+    needs: [agent, engines]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [abo-deepfilternet, abo-chatterbox, abo-clearervoice, abo-resemble-enhance]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Liberer de l espace
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /usr/local/.ghcup \
+                      /opt/hostedtoolcache/CodeQL
+          sudo docker image prune --all --force
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: .
+          file: engines/standalone/Dockerfile
+          push: true
+          # Le tag par commit, et pas `:v1` : la variante doit porter le moteur
+          # de ce commit-ci, pas celui qu'un tag mobile designera demain.
+          build-args: |
+            ENGINE_IMAGE=${{ env.REGISTRY_USER }}/${{ matrix.image }}:${{ github.sha }}
+          tags: |
+            ${{ env.REGISTRY_USER }}/${{ matrix.image }}:standalone
+            ${{ env.REGISTRY_USER }}/${{ matrix.image }}:standalone-${{ github.sha }}
+
+      - name: Digest a reporter
+        run: |
+          echo "### ${{ matrix.image }} (standalone)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ env.REGISTRY_USER }}/${{ matrix.image }}@${{ steps.build.outputs.digest }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  # Qwen ne se reconstruit plus a chaque poussee. L'image pese 31,8 Go — elle
+  # compile CUDA pour six architectures et telecharge trois jeux de poids — et
+  # elle change rarement. La reconstruire pour une correction d'agent serait une
+  # heure de runner pour rien.
+  #
+  # Elle reste a un clic : « Run workflow » avec la case cochee.
+  qwen:
+    needs: tests
+    if: ${{ inputs.qwen }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,6 +264,6 @@ jobs:
           file: engines/qwen3_tts/Dockerfile
           push: true
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/abo-qwen3-tts:${{ github.sha }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/abo-qwen3-tts:v1
-            ${{ secrets.DOCKERHUB_USERNAME }}/abo-qwen3-tts:latest
+            ${{ env.REGISTRY_USER }}/abo-qwen3-tts:${{ github.sha }}
+            ${{ env.REGISTRY_USER }}/abo-qwen3-tts:v1
+            ${{ env.REGISTRY_USER }}/abo-qwen3-tts:latest

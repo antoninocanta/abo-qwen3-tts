@@ -16,12 +16,18 @@ FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    # Les poids ne vivent PAS dans l'image. Ils sont montes depuis le disque de
-    # travail : une image qui les porte se retelecharge en entier a chaque
-    # correction de code, et remplit le disque de la machine qui la construit.
-    # Qwen fait l'inverse a dessein — sur une instance louee reveillee a froid,
-    # retelecharger plusieurs gigaoctets coute plus cher que le stockage. Sur
-    # un PC qu'on possede, cette raison tombe.
+    # Les poids vivent DANS l'image, et chaque moteur les y ecrit avant de
+    # copier son serveur (`ADR-009` § 9).
+    #
+    # La regle precedente — poids montes depuis un disque de travail — reposait
+    # sur une premisse fausse : « une image qui les porte se retelecharge en
+    # entier a chaque correction du serveur ». `docker pull` ne recupere que
+    # les couches MANQUANTES. Poids ecrits sous le `COPY server.py`, corriger
+    # le serveur ne coute que la derniere couche, quelques kilo-octets.
+    #
+    # Ce qui reste vrai de l'ancienne raison — la place sur la machine qui
+    # construit — ne justifie pas de faire attendre une carte louee pendant
+    # qu'elle telecharge un gigaoctet au premier travail d'un utilisateur.
     HF_HOME=/weights \
     TORCH_HOME=/weights/torch \
     ENGINE_PORT=18100

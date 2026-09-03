@@ -71,10 +71,13 @@ def health() -> dict:
     Une machine qui se déclare saine sans porter ses poids rejoindrait la ferme
     et échouerait au premier travail d'un utilisateur.
     """
-    weights = Path(os.getenv("HF_HOME", "/weights"))
     return {
         "status": "ok",
-        "engine": _model is not None or weights.exists(),
+        # Chargé, ou chargeable : les poids sont cuits dans l'image, donc leur
+        # présence réelle suffit à promettre le premier travail. Répondre vrai
+        # sur l'existence du répertoire — qui existe toujours — ferait entrer
+        # dans la ferme une machine qui n'a rien à servir.
+        "engine": _model is not None or aboengine.weights_present(),
         "enginePath": "chatterbox-vc",
         "device": DEVICE,
         "loaded": _model is not None,

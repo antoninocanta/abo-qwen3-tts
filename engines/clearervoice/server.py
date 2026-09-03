@@ -60,10 +60,11 @@ def model(checkpoint: str):
 
 @app.get("/health")
 def health() -> dict:
-    weights = Path(os.getenv("HF_HOME", "/weights"))
     return {
         "status": "ok",
-        "engine": bool(_models) or weights.exists(),
+        # Voir `chatterbox/server.py` : l'existence du répertoire de poids ne
+        # prouve rien, l'image le crée. Il faut des octets dedans.
+        "engine": bool(_models) or aboengine.weights_present(),
         "enginePath": DEFAULT_CHECKPOINT,
         "device": DEVICE,
         "loaded": sorted(_models),

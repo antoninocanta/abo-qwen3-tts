@@ -22,17 +22,18 @@
 # au premier travail d'un utilisateur.
 #
 # --- Ou vivent les poids ------------------------------------------------------
-# `ABO_ENGINE_DATA` designe un repertoire de travail. Les poids y sont **montes**
-# plutot que cuits dans les images : une image qui les porte se retelecharge en
-# entier a chaque correction du serveur, et elle fige l'endroit ou ils vivent.
-# Ils s'y chargent une fois au demarrage ; c'est le calcul qui decide du reste,
-# pas le disque.
+# **Dans les images**, depuis `ADR-009` § 9. Une machine qui tire une image est
+# prete a servir, et il n'y a plus rien a monter ni a preparer.
 #
-# Le placer sur un disque **amovible** est une fausse bonne idee. Cela marche —
-# eprouve — mais un moteur dont les poids sont sur un cable ne demarre plus
-# quand on le debranche, et la machine reste dans la ferme en promettant une
-# capacite qu'elle ne sert plus. Un repertoire du disque systeme est le defaut
-# raisonnable ; un second disque **interne** est le bon endroit s'il y en a un.
+# La regle precedente — montage depuis `ABO_ENGINE_DATA` — reposait sur une
+# premisse fausse : « une image qui porte ses poids se retelecharge en entier a
+# chaque correction du serveur ». `docker pull` ne recupere que les couches
+# MANQUANTES, et les poids sont ecrits sous le `COPY server.py`.
+#
+# **Ne remettez pas de volume sur `/weights`.** Il masquerait les poids cuits,
+# ce qui donnerait le pire des deux mondes : une image lourde ET un
+# telechargement au premier travail d'un utilisateur — decouvert par lui, pas
+# par nous. `ABO_ENGINE_DATA` n'est plus lu par aucun service.
 
 services:
   agent:
@@ -119,8 +120,6 @@ services:
     restart: unless-stopped
     expose:
       - "18100"
-    volumes:
-      - ${ABO_ENGINE_DATA:-./data}/weights/clearervoice:/weights
     deploy:
       resources:
         reservations:
@@ -143,8 +142,6 @@ services:
     restart: unless-stopped
     expose:
       - "18100"
-    volumes:
-      - ${ABO_ENGINE_DATA:-./data}/weights/resemble-enhance:/weights
     deploy:
       resources:
         reservations:
@@ -153,12 +150,10 @@ services:
               count: 1
               capabilities: [gpu]
 
-  # Transfert de jeu. Contrairement aux deux autres, ses poids ne sont pas dans
-  # l'image : ils se telechargent au premier appel dans `HF_HOME`, monte depuis
-  # le disque de travail. Une image qui les porterait se retelechargerait en
-  # entier a chaque correction du serveur.
+  # Transfert de jeu — « Follow My Lead ». Ses poids sont dans l'image comme
+  # ceux des autres depuis `ADR-009`.
   #
-  #   ABO_ENGINE_DATA=D:/abo-engines docker compose --profile transfer up -d
+  #   docker compose --profile transfer up -d
   #   ABO_ENGINES=chatterbox|voice.chatterbox|1|http://chatterbox:18100
   chatterbox:
     profiles: ["transfer"]
@@ -167,8 +162,6 @@ services:
     restart: unless-stopped
     expose:
       - "18100"
-    volumes:
-      - ${ABO_ENGINE_DATA:-./data}/weights/chatterbox:/weights
     deploy:
       resources:
         reservations:

@@ -37,6 +37,45 @@ docker compose -f deploy/docker-compose.yml up -d
 L'agent se déclare, annonce ses moteurs et son matériel, puis attend du
 travail. **Aucun port n'est ouvert** : tout part de la machine vers ABO.
 
+## Enrôler une machine louée
+
+Même protocole, deux différences. Voir `ADR-009`.
+
+**Le type de backend change.** `RENTED` et non `OWNED` : le placement s'en sert
+pour n'envoyer au loué que ce qui doit y aller — un travail différé, vendu
+moitié prix contre de la patience, ne part jamais sur une carte facturée à
+l'heure.
+
+```bash
+docker compose -p abo_backend exec api \
+  python -m app.workers.cli create "vast-3090-nuit" RENTED vast
+```
+
+**Le secret ne doit pas survivre à la machine.** Aujourd'hui la création est
+manuelle et la révocation aussi : quand l'instance est détruite, révoquer le
+worker fait partie de l'opération, ce n'est pas un ménage optionnel.
+
+```bash
+docker compose -p abo_backend exec api python -m app.workers.cli revoke wk_…
+```
+
+C'est ce que `ABOB-131` et `132` automatiseront — une passerelle de fournisseur
+frappera l'identité au moment de louer et la révoquera à la destruction. En
+attendant, l'oublier laisse un secret valide pour une machine qui appartient
+maintenant à quelqu'un d'autre.
+
+### Ce qui rend une location utilisable
+
+Les poids sont **dans les images** (`ADR-009` § 9) : une instance qui tire
+`abo-chatterbox:v1` est prête, sans volume à monter ni téléchargement au premier
+appel. Référencer l'image **par digest** et non par `:v1` — un tag mobile n'est
+pas retéléchargé par une machine qui l'a en cache, et elle servirait du code
+périmé sans que rien ne le dise.
+
+L'agent n'ouvre aucun port et compose vers ABO en sortant : une instance louée
+n'a besoin d'aucune configuration réseau, d'aucun VPN, et d'aucune adresse
+publique.
+
 ## Retirer une machine
 
 Passer le worker en `DRAINING` depuis la console — écran **Ferme**, motif

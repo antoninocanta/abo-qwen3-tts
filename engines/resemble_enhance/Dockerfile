@@ -10,9 +10,13 @@
 # `aboengine`, et sa couche torch est déjà stockée pour ClearerVoice et
 # Chatterbox, donc la réutiliser ne coûte pas d'octets neufs.
 #
-# Les poids se téléchargent au premier appel dans `HF_HOME`, monté depuis le
-# disque de travail — jamais cuits dans l'image.
-FROM abo-engine-base:cuda
+# Les poids sont cuits dans l'image, sous le `COPY server.py` (`ADR-009` § 9).
+# Ne pas monter de volume sur `/weights` : il les masquerait.
+# Le socle est reference par un ARG pour que la meme recette serve ici et
+# ailleurs : en local `abo-engine-base:cuda` suffit, en CI on epingle le tag
+# du commit courant pour que moteur et socle ne puissent pas diverger.
+ARG BASE_IMAGE=antoninocanta/abo-engine-base:cuda
+FROM ${BASE_IMAGE}
 
 # `git-lfs`, et pas seulement `git` : l'amont ne passe pas par le cache
 # HuggingFace habituel — il **clone un dépôt git** et tire les poids en LFS.
@@ -68,6 +72,24 @@ RUN pip install --no-cache-dir --no-deps "resemble-enhance==${RESEMBLE_VERSION}"
 # coûte une machine qui a rejoint la ferme en promettant ce qu'elle ne sait
 # pas faire.
 RUN python -c "from resemble_enhance.enhancer.inference import denoise, enhance; print('inference importable')"
+
+# --- Les poids, cuits ici et pas ailleurs ------------------------------------
+# Les deux autres moteurs appellent leur bibliotheque pour telecharger ; celui-ci
+# ne peut pas, parce que `run_dir()` vit dans `server.py` et qu'appeler
+# `server.py` ici mettrait les poids DANS la couche du serveur — donc les
+# ferait retelecharger a chaque correction, exactement ce qu'on cherche a
+# eviter. Les quatre lignes sont donc reproduites, et le `test -f` final est ce
+# qui garantit qu'elles n'ont pas divergé : c'est le fichier meme que
+# `run_dir()` cherche pour decider qu'il n'a rien a faire.
+#
+# `GIT_LFS_SKIP_SMUDGE` : le clone ne tire que les pointeurs, le `lfs pull`
+# amene les octets. Sans le drapeau, git tente les deux d'un coup et un echec
+# ne dit pas lequel a echoue.
+ARG RESEMBLE_REPO_URL=https://huggingface.co/ResembleAI/resemble-enhance
+RUN GIT_LFS_SKIP_SMUDGE=1 git clone "${RESEMBLE_REPO_URL}" /weights/model_repo \
+ && git -C /weights/model_repo lfs pull \
+ && test -f /weights/model_repo/enhancer_stage2/hparams.yaml \
+ && echo "poids resemble-enhance en place"
 
 COPY server.py /opt/abo/server.py
 

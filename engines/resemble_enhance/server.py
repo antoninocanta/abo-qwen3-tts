@@ -103,10 +103,12 @@ def run_dir() -> Path:
 
 @app.get("/health")
 def health() -> dict:
-    weights = Path(os.getenv("HF_HOME", "/weights"))
     return {
         "status": "ok",
-        "engine": weights.exists(),
+        # Celui-ci sait nommer son fichier : c'est exactement celui que
+        # `run_dir()` cherche pour décider qu'il n'a rien à télécharger. Santé
+        # et chargement disent donc la même chose, ce qui est le but.
+        "engine": aboengine.weights_present("model_repo/enhancer_stage2/hparams.yaml"),
         "enginePath": "resemble-enhance",
         "device": DEVICE,
         "loaded": _loaded,
